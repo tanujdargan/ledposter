@@ -1,0 +1,24 @@
+# Copy to /data/config.yaml. Every hardware tunable lives here, not in code.
+version: 1
+
+matrix:
+  hardware_mapping: adafruit-hat-pwm  # needs the GPIO4-GPIO18 bonnet mod; else adafruit-hat
+  panel_size: 64
+  gpio_slowdown: 2                    # raise if you see flicker/garbage, lower for refresh rate
+  pwm_bits: 9
+  brightness: 100                     # percent, hardware PWM
+  show_refresh_rate: false            # true prints refresh Hz to the terminal
+  # Chain order: the first entry is the panel plugged into the bonnet.
+  # col/row place it on the portrait grid (0,0 = top-left).
+  # rotate: how far that panel is physically turned clockwise (0/90/180/270).
+  panels:
+    - {col: 0, row: 0}  # 1 top-left
+    - {col: 1, row: 0}  # 2 top-right
+    - {col: 1, row: 1}  # 3 middle-right
+    - {col: 0, row: 1}  # 4 middle-left
+    - {col: 0, row: 2}  # 5 bottom-left
+    - {col: 1, row: 2}  # 6 bottom-right
+
+power:
+  ceiling_amps: 13.0               # frames are scaled down to never exceed this
+  amps_full_white_per_panel: 6.0   # calibration: measure one panel at full white and set this
