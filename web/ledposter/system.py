@@ -274,10 +274,12 @@ class System:
 
 # -- install-time config -------------------------------------------------------------
 
-def init_config(path, ssh_mode=None, keys_text="", user="ledposter", group="ledposter", port=80):
-    """The Pi's config: a fresh one from config/config.example.yaml (no example playlist, the
-    service user, port 80) when none exists, else the existing file; `ssh_mode` (with keys)
-    replaces the ssh section when given. Writes the derived unit input files next to it."""
+def init_config(path, ssh_mode=None, keys_text="", port=80):
+    """The Pi's config: a fresh one from config/config.example.yaml (no example playlist, port
+    80) when none exists, else the existing file; `ssh_mode` (with keys) replaces the ssh
+    section when given. Writes the derived unit input files next to it. The engine's socket
+    paths and drop user are not written here: as root the engine takes them from the unit's
+    flags, never from this file (it is the web app's)."""
     if os.path.exists(path):
         cfg = config.load(path)
     else:
@@ -285,7 +287,8 @@ def init_config(path, ssh_mode=None, keys_text="", user="ledposter", group="ledp
         with open(example) as f:
             cfg = yaml.safe_load(f)
         cfg["playlists"] = {}
-        cfg["engine"]["user"], cfg["engine"]["group"] = user, group
+        for k in ("user", "group"):  # dev-only keys of the example; the installed engine ignores them
+            cfg["engine"].pop(k, None)
         cfg["web"]["port"] = port
         config.save(cfg, path)
         cfg = config.load(path)  # every section present, like the app would leave it

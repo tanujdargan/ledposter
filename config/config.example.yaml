@@ -36,12 +36,17 @@ sensors:
     address: 0x23   # ADDR pin low; 0x5c if ADDR is high
     poll_ms: 500
 
+# socket, preview_socket, user, group: where the engine's sockets go and whom it drops root
+# to. The web app connects to socket/preview_socket. The engine itself only reads these four
+# keys when it is NOT root (dev, make sim): as root (sudo, the systemd unit) it ignores them
+# and uses its --socket/--preview-socket/--user/--group flags (ledposter-engine.service) or
+# the defaults below, because this file belongs to the web app's user (docs/DEVIATIONS.md).
 engine:
   socket: /run/ledposter/engine.sock          # control: newline-delimited JSON (docs/protocol.md)
   preview_socket: /run/ledposter/frames.sock  # output frames for the live preview
   preview_fps: 15                             # max preview messages per second per client
-  user: daemon                                # the engine drops root to user:group after startup (sockets are chowned to it)
-  group: daemon                               # the web app must run in this group (or as root) to use the sockets
+  user: daemon                                # dev only (see above): the account the engine drops to; never root
+  group: daemon                               # dev only: the sockets' group; the web app must run in it (or as root)
 
 display:
   gamma: 2.2   # engine LUT for patterns, effects, clock and text; the transcoder bakes the same curve into media

@@ -9,6 +9,7 @@
 #include "ipc.h"
 #include "media.h"
 #include "patterns.h"
+#include "privs.h"
 #include "test_m5.h"
 #include "stream.h"
 
@@ -197,6 +198,74 @@ static std::vector<uint8_t> e131(uint16_t u, uint8_t seq, const std::vector<uint
   return p;
 }
 
+
+// Root-time settings (privs.h): what the engine accepts for its sockets and
+// the account it drops to, and what listen_unix will and won't touch.
+static void test_privs() {
+  assert(socket_dir("/run/ledposter/engine.sock", "/run/ledposter/frames.sock") == "/run/ledposter");
+  assert(socket_dir("/tmp/a/b/c.sock", "/tmp/a/b/d.sock") == "/tmp/a/b");
+  assert(throws([] { socket_dir("run/ledposter/engine.sock", "/run/ledposter/frames.sock"); }));  // relative
+  assert(throws([] { socket_dir("/run/ledposter/../engine.sock", "/run/ledposter/frames.sock"); }));
+  assert(throws([] { socket_dir("/run/ledposter/./engine.sock", "/run/ledposter/frames.sock"); }));
+  assert(throws([] { socket_dir("/run//ledposter/engine.sock", "/run/ledposter/frames.sock"); }));
+  assert(throws([] { socket_dir("/run/ledposter/engine.sock/", "/run/ledposter/frames.sock"); }));
+  assert(throws([] { socket_dir("/engine.sock", "/frames.sock"); }));  // directly under /
+  assert(throws([] { socket_dir("/run/ledposter/engine.sock", "/run/other/frames.sock"); }));  // two dirs
+  assert(throws([] { socket_dir("/run/ledposter/engine.sock", "/run/ledposter/engine.sock"); }));  // same name
+  assert(throws([] { socket_dir("", "/run/ledposter/frames.sock"); }));
+
+  check_drop_target("ledposter", 999, "ledposter", 999);
+  assert(throws([] { check_drop_target("root", 0, "ledposter", 999); }));
+  assert(throws([] { check_drop_target("toor", 0, "ledposter", 999); }));  // uid 0 under another name
+  assert(throws([] { check_drop_target("ledposter", 999, "root", 0); }));
+  assert(throws([] { check_drop_target("ledposter", 999, "wheel", 0); }));
+  assert(throws([] { check_drop_target("", 999, "ledposter", 999); }));
+  assert(throws([] { check_drop_target("ledposter", 999, "", 999); }));
+
+  // The socket directory: made 0770 for the group if missing, else it must be a
+  // real directory of the owner's that others can't write to.
+  char tmpl[] = "/tmp/ledposter-privs-XXXXXX";
+  const std::string base = mkdtemp(tmpl);
+  const uid_t me = geteuid();
+  const gid_t gid = getegid();
+  struct stat st;
+  int fd = open_socket_dir(base + "/new", me, gid);
+  assert(fd >= 0 && fstat(fd, &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 07777) == 0770);
+  assert(st.st_gid == gid && st.st_uid == me);
+  close(fd);
+  fd = open_socket_dir(base + "/new", me, gid);  // and again, now it exists
+  assert(fd >= 0);
+  close(fd);
+  assert(throws([&] { open_socket_dir(base + "/new", me + 1, gid); }));  // someone else's
+  assert(chmod((base + "/new").c_str(), 0777) == 0);
+  assert(throws([&] { open_socket_dir(base + "/new", me, gid); }));  // world-writable
+  assert(chmod((base + "/new").c_str(), 0770) == 0);
+  assert(symlink((base + "/new").c_str(), (base + "/link").c_str()) == 0);
+  assert(throws([&] { open_socket_dir(base + "/link", me, gid); }));  // a symlink, even to a good dir
+  FILE *fp = fopen((base + "/file").c_str(), "w");
+  fclose(fp);
+  assert(throws([&] { open_socket_dir(base + "/file", me, gid); }));  // not a directory
+  assert(throws([&] { open_socket_dir(base + "/file/sub", me, gid); }));  // can't be made
+
+  // listen_unix: never unlinks what isn't a socket; a stale socket is replaced; mode 660.
+  assert(throws([&] { listen_unix(base + "/file", false); }));
+  assert(lstat((base + "/file").c_str(), &st) == 0 && S_ISREG(st.st_mode));  // still there
+  assert(symlink((base + "/file").c_str(), (base + "/new/sym.sock").c_str()) == 0);
+  assert(throws([&] { listen_unix(base + "/new/sym.sock", false); }));
+  assert(lstat((base + "/new/sym.sock").c_str(), &st) == 0 && S_ISLNK(st.st_mode));
+  const std::string sock = base + "/new/engine.sock";
+  int lfd = listen_unix(sock, false);
+  assert(lfd >= 0 && lstat(sock.c_str(), &st) == 0 && S_ISSOCK(st.st_mode) && (st.st_mode & 0777) == 0660);
+  assert(throws([&] { listen_unix(sock, false); }));  // another engine is listening
+  close(lfd);  // crashed without unlinking: the next engine takes the name over
+  lfd = listen_unix(sock, false);
+  assert(lfd >= 0 && lstat(sock.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
+  close(lfd);
+  assert(throws([&] { listen_unix(base + "/missing/dir/x.sock", false); }));  // no dir made as root
+  lfd = listen_unix(base + "/made/dir/x.sock", true);  // dev: the parent is created
+  assert(lfd >= 0);
+  close(lfd);
+}
 
 // Double press: two short presses with a gap under double_ms (button.h).
 static void test_double_press() {
@@ -404,6 +473,7 @@ int main(int argc, char **argv) {
   test_m5();
   test_stream();
   test_double_press();
+  test_privs();
 
   if (argc > 1) {
     draw_pattern("panel-id", f, L, 0, 0);

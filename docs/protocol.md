@@ -1,13 +1,13 @@
 # Engine protocol
 
-How the web app (or a script) talks to the display engine. Two Unix stream sockets, both set in the config (plus the [DDP and E1.31 inputs](#streaming-input-ddp-and-e131) on UDP):
+How the web app (or a script) talks to the display engine. Two Unix stream sockets (plus the [DDP and E1.31 inputs](#streaming-input-ddp-and-e131) on UDP). The config keys are where the web app connects; the engine binds the same paths from the config when it is not root, and from its `--socket`/`--preview-socket` flags (set in `ledposter-engine.service`) or the defaults when it runs as root, since the config is the web app's file:
 
-| config key | default | carries |
+| config key / engine flag | default | carries |
 |---|---|---|
-| `engine.socket` | `/run/ledposter/engine.sock` | control: JSON requests and responses |
-| `engine.preview_socket` | `/run/ledposter/frames.sock` | preview: status + output frame, one way |
+| `engine.socket` / `--socket` | `/run/ledposter/engine.sock` | control: JSON requests and responses |
+| `engine.preview_socket` / `--preview-socket` | `/run/ledposter/frames.sock` | preview: status + output frame, one way |
 
-The engine creates the parent directory, replaces a stale socket file left by a crashed engine (it refuses to start the socket if another engine still answers on it), and sets mode `660`. If a socket can't be created, the engine logs why and keeps driving the wall without it.
+The engine creates the parent directory (as root: both sockets must sit in one directory that is root's and not world-writable, like the unit's `RuntimeDirectory`), replaces a stale socket file left by a crashed engine (it refuses to start the socket if another engine still answers on it, and never removes anything that is not a socket), and creates them mode `660` with the group it drops to. If a socket can't be created, the engine logs why and keeps driving the wall without it.
 
 Whoever adds a command documents it here.
 

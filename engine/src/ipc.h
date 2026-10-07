@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -89,9 +90,14 @@ inline uint32_t parse_color(const json &v) {
 
 // ---- sockets ----
 
-// Binds a Unix stream socket at path: creates the parent dir, replaces a
-// stale socket file (refuses if something still answers on it), chmod 660.
-inline int listen_unix(const std::string &path) {
+// Binds a Unix stream socket at path, mode 660 (set through the umask while
+// binding: nothing is ever chmod'ed or chowned by path, see docs/DEVIATIONS.md).
+// Replaces a stale socket file (refuses if something still answers on it);
+// anything at the path that is not a socket is left alone and refused.
+// make_dir: create the parent (dev); as root the engine has verified the
+// directory first (privs.h). gid: the new socket's group, taken from the
+// effective gid while binding (root only; -1 keeps the process's own).
+inline int listen_unix(const std::string &path, bool make_dir = true, gid_t gid = gid_t(-1)) {
   auto fail = [&](const std::string &what) {
     return std::runtime_error(path + ": " + what + ": " + strerror(errno));
   };
@@ -102,18 +108,37 @@ inline int listen_unix(const std::string &path) {
   memcpy(a.sun_path, path.c_str(), path.size() + 1);
   std::error_code ec;
   const auto dir = std::filesystem::path(path).parent_path();
-  if (!dir.empty()) std::filesystem::create_directories(dir, ec);
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) throw fail("socket");
-  if (connect(fd, (sockaddr *)&a, sizeof a) == 0) {
+  if (make_dir && !dir.empty()) std::filesystem::create_directories(dir, ec);
+  struct stat st;
+  if (lstat(path.c_str(), &st) == 0) {
+    if (!S_ISSOCK(st.st_mode)) throw std::runtime_error(path + ": exists and is not a socket; refusing to replace it");
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) throw fail("socket");
+    if (connect(fd, (sockaddr *)&a, sizeof a) == 0) {
+      close(fd);
+      throw std::runtime_error(path + ": another engine is already listening here");
+    }
     close(fd);
-    throw std::runtime_error(path + ": another engine is already listening here");
+    if (unlink(path.c_str()) && errno != ENOENT) throw fail("unlink");
+  } else if (errno != ENOENT) {
+    throw fail("lstat");
   }
-  close(fd);
-  unlink(path.c_str());
-  fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) throw fail("socket");
-  if (bind(fd, (sockaddr *)&a, sizeof a) || chmod(path.c_str(), 0660) || listen(fd, 8)) {
+  const gid_t old_gid = getegid();
+  if (gid != gid_t(-1) && setegid(gid)) {
+    const auto e = fail("setegid");
+    close(fd);
+    throw e;
+  }
+  const mode_t old_umask = umask(0117);
+  const int bound = bind(fd, (sockaddr *)&a, sizeof a);
+  umask(old_umask);
+  if (gid != gid_t(-1) && setegid(old_gid)) {
+    perror("setegid");
+    exit(1);  // never carry on with the wrong gid
+  }
+  if (bound || listen(fd, 8)) {
     const auto e = fail("bind");
     close(fd);
     throw e;

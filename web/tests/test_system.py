@@ -447,7 +447,8 @@ def test_init_config_for_the_pi(tmp_path):
     cfg = system.init_config(str(p), "key-only", f"# laptop\n{ED}\n")
     assert stat.S_IMODE(p.stat().st_mode) == 0o640
     text = yaml.safe_load(p.read_text())
-    assert text["engine"]["user"] == "ledposter" and text["engine"]["group"] == "ledposter" and text["web"]["port"] == 80
+    assert "user" not in text["engine"] and "group" not in text["engine"] and text["web"]["port"] == 80  # the unit's flags, not the app's file
+    assert text["engine"]["socket"] == "/run/ledposter/engine.sock"  # where the web app connects
     assert text["playlists"] == {} and text["ssh"] == {"mode": "key-only", "authorized_keys": ED + "\n"}
     assert text["maintenance"] == {"enabled": True, "day": 6, "hour": 4} and text["version"] == 1
     assert text["matrix"]["hardware_mapping"] == "adafruit-hat-pwm" and cfg["network"]["hotspot_ssid"] == "LEDWall-Setup"

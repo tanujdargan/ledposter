@@ -31,6 +31,7 @@
 #include "media.h"
 #include "overlay.h"
 #include "patterns.h"
+#include "privs.h"
 #include "stream.h"
 
 #ifndef LEDPOSTER_FONTS_DIR  // the Makefile sets it to vendor/rpi-rgb-led-matrix/fonts
@@ -65,10 +66,16 @@ struct Display {
     rt.drop_priv_group = group.c_str();
     // The library only sets uid and gid; without this the engine would keep
     // root's supplementary groups instead of the user's (i2c for the BH1750).
-    const struct group *gr = geteuid() == 0 ? getgrnam(group.c_str()) : nullptr;
+    const bool was_root = geteuid() == 0;
+    const struct group *gr = was_root ? getgrnam(group.c_str()) : nullptr;
     if (gr && initgroups(user.c_str(), gr->gr_gid)) perror("initgroups");
     matrix = rgb_matrix::RGBMatrix::CreateFromOptions(o, rt);
     if (!matrix) exit(1);  // library already printed why
+    if (was_root && geteuid() == 0) {  // the library logs a failed drop and carries on; we don't
+      fprintf(stderr, "ledengine: still root after starting the matrix (drop to %s:%s failed)\n",
+              user.c_str(), group.c_str());
+      exit(1);
+    }
     matrix->set_luminance_correct(false);  // we own gamma (docs/ARCHITECTURE.md)
     off = matrix->CreateFrameCanvas();
   }
@@ -127,13 +134,18 @@ static volatile std::sig_atomic_t g_stop = 0;
 static int usage() {
   fprintf(stderr,
           "usage: ledengine [--config $LEDPOSTER_DATA/config.yaml]\n"
+          "                 [--socket PATH] [--preview-socket PATH] [--user NAME] [--group NAME]\n"
           "                 [--pattern P [--color RRGGBB] | --play MEDIA_ID | --playlist NAME |\n"
           "                  --effect E | --mode clock|idle | --text TEXT]\n"
           "  P: panel-id, solid, cycle, rows, cols\n"
           "  E: spider-sense, web-shot, uav-radar, plasma, fire, starfield (default settings)\n"
           "  media is read from $LEDPOSTER_DATA/media (LEDPOSTER_DATA defaults to /data)\n"
-          "  the flags set the starting mode (default: the boot screen until the web app\n"
+          "  the mode flags set the starting mode (default: the boot screen until the web app\n"
           "  sets one); the control socket can change it\n"
+          "  --socket, --preview-socket, --user, --group: where the sockets go and whom the\n"
+          "  engine drops root to (defaults /run/ledposter/{engine,frames}.sock, daemon:daemon).\n"
+          "  As root the config's engine.socket/preview_socket/user/group are ignored (the\n"
+          "  config belongs to the web app's user); they apply when not running as root.\n"
 #ifdef LEDPOSTER_SIM
           "  sim only: --dump out.ppm writes the output frame about once a second\n"
 #endif
@@ -368,33 +380,43 @@ static std::string yaml_at(const YAML::Node &cfg, const char *key) {
 }
 
 // Binds a socket now, while still root (the matrix library drops root when it
-// starts). As root, the socket and the parent dir if we made it go to
-// user:group, so the engine can still remove them after the drop. -1 if it
-// can't: the wall keeps running without it (e.g. no write access to /run),
-// it just can't be controlled or previewed.
-static int open_socket(const char *what, const std::string &path, const std::string &user,
-                       const std::string &group) {
-  std::error_code ec;
-  const auto dir = std::filesystem::path(path).parent_path();
-  const bool had_dir = dir.empty() || std::filesystem::exists(dir, ec);
-  int fd;
+// starts). As root (gid set) the socket is root:gid 660 in the directory
+// open_socket_dir verified, so the dropped-to group can connect and the engine
+// can still remove it after the drop; nothing is chowned or chmoded by path.
+// -1 if it can't: the wall keeps running without it (e.g. no write access to
+// /run), it just can't be controlled or previewed.
+static int open_socket(const char *what, const std::string &path, gid_t gid) {
   try {
-    fd = listen_unix(path);
+    return listen_unix(path, gid == gid_t(-1), gid);
   } catch (const std::exception &e) {
     fprintf(stderr, "ledengine: %s socket off: %s\n", what, e.what());
     return -1;
   }
-  if (geteuid() == 0) {
-    const passwd *pw = getpwnam(user.c_str());
-    const struct group *gr = getgrnam(group.c_str());
-    if (!pw || !gr)
-      fprintf(stderr, "ledengine: no user %s or group %s (engine.user, engine.group)\n",
-              user.c_str(), group.c_str());
-    else if (chown(path.c_str(), pw->pw_uid, gr->gr_gid) ||
-             (!had_dir && chown(dir.c_str(), pw->pw_uid, gr->gr_gid)))
-      fprintf(stderr, "ledengine: chown %s: %s\n", path.c_str(), strerror(errno));
+}
+
+// The root-time settings (privs.h). flags: from the command line. As root the
+// config is ignored for these (it is the web app's file): flags, else defaults.
+// Not root: flags, else config, else defaults, so dev and sim keep working
+// from the config alone.
+static PrivSettings priv_settings(const PrivSettings &flags, const PrivSettings &defaults,
+                                  YAML::Node eng) {
+  PrivSettings s = defaults;
+  struct Key {
+    const char *name;
+    std::string PrivSettings::*field;
+  };
+  for (const Key &k : {Key{"socket", &PrivSettings::socket},
+                       Key{"preview_socket", &PrivSettings::preview_socket},
+                       Key{"user", &PrivSettings::user}, Key{"group", &PrivSettings::group}}) {
+    const std::string &flag = flags.*k.field;
+    const std::string in_cfg = eng[k.name] ? eng[k.name].as<std::string>("") : "";  // "" if not a scalar
+    if (!flag.empty()) s.*k.field = flag;
+    else if (geteuid() != 0 && !in_cfg.empty()) s.*k.field = in_cfg;
+    if (geteuid() == 0 && !in_cfg.empty() && in_cfg != s.*k.field)
+      fprintf(stderr, "ledengine: engine.%s in the config is ignored when running as root (using %s; set it with --%s)\n",
+              k.name, (s.*k.field).c_str(), k.name == std::string("preview_socket") ? "preview-socket" : k.name);
   }
-  return fd;
+  return s;
 }
 
 static PressClassifier load_button(YAML::Node b) {  // non-const: missing keys read as defaults
@@ -418,10 +440,15 @@ int main(int argc, char **argv) {
   std::string config_path = data + "/config.yaml", pattern, play, playlist, dump;
   std::string effect, kind, text;
   uint32_t color = 0xffffff;
+  PrivSettings flags{"", "", "", ""};  // only what was given; privs.h has the defaults
   if ((argc - 1) % 2) return usage();
   for (int i = 1; i < argc; i += 2) {
     std::string k = argv[i], v = argv[i + 1];
     if (k == "--config") config_path = v;
+    else if (k == "--socket") flags.socket = v;
+    else if (k == "--preview-socket") flags.preview_socket = v;
+    else if (k == "--user") flags.user = v;
+    else if (k == "--group") flags.group = v;
     else if (k == "--pattern") pattern = v;
     else if (k == "--color") color = std::stoul(v, nullptr, 16);
     else if (k == "--play") play = v;
@@ -486,16 +513,33 @@ int main(int argc, char **argv) {
     return 1;
   }
   const Layout &layout = *L;
-  YAML::Node bh = cfg["sensors"]["bh1750"], eng = cfg["engine"];
-  const std::string sock = eng["socket"].as<std::string>("/run/ledposter/engine.sock");
-  const std::string psock = eng["preview_socket"].as<std::string>("/run/ledposter/frames.sock");
-  // What the matrix library drops root to (a dedicated user from milestone 8).
-  const std::string user = eng["user"].as<std::string>("daemon");
-  const std::string group = eng["group"].as<std::string>("daemon");
+  YAML::Node bh = cfg["sensors"]["bh1750"];
+  // Socket paths and the account the matrix library drops root to (ledposter
+  // on an installed wall, from the unit's flags). As root nothing here comes
+  // from the config, and the paths and account are checked before use.
+  const PrivSettings ps = priv_settings(flags, PrivSettings{}, cfg["engine"]);
+  const std::string &sock = ps.socket, &psock = ps.preview_socket, &user = ps.user, &group = ps.group;
+  gid_t sock_gid = gid_t(-1);  // root: the sockets' group; the dir they go in is verified
+  int dir_fd = -1;
+  if (geteuid() == 0) {
+    try {
+      const passwd *pw = getpwnam(user.c_str());
+      const struct group *gr = getgrnam(group.c_str());
+      if (!pw) throw std::runtime_error("--user " + user + ": no such user");
+      if (!gr) throw std::runtime_error("--group " + group + ": no such group");
+      check_drop_target(user, pw->pw_uid, group, gr->gr_gid);
+      sock_gid = gr->gr_gid;
+      dir_fd = open_socket_dir(socket_dir(sock, psock), 0, sock_gid);
+    } catch (const std::exception &e) {
+      fprintf(stderr, "ledengine: %s\n", e.what());
+      return 1;
+    }
+  }
   // Sockets, the I2C bus and the button line are opened before the matrix
   // starts (it drops root). The button is polled from start() below.
-  const int sock_fd = open_socket("control", sock, user, group);
-  const int psock_fd = open_socket("preview", psock, user, group);
+  const int sock_fd = open_socket("control", sock, sock_gid);
+  const int psock_fd = open_socket("preview", psock, sock_gid);
+  if (dir_fd >= 0) close(dir_fd);
   YAML::Node bcfg = cfg["button"];  // non-const: a missing section reads as defaults
   Button button(bcfg["chip"].as<std::string>("/dev/gpiochip0"), bcfg["gpio"].as<int>(-1), press);
 
