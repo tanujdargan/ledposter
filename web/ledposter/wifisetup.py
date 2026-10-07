@@ -5,7 +5,8 @@ drops the hotspot, so the phone loses this server mid-flow; the wall shows every
 text through the engine (`show_text`) and the hotspot comes back on failure.
 
 Triggers: no network within `setup_timeout_s` of the web app starting, the engine's
-`wifi_setup_requested` marker changing (button held 10s), or Settings.
+`wifi_setup_requested` marker changing (button held 10s), or Settings. A button double
+press (the engine's `button_double_count` going up) shows the hostname and IP again.
 """
 import asyncio
 import logging
@@ -54,6 +55,7 @@ class WifiSetup:
         self._button_at = -BUTTON_RETRY_S
         self._text_at = 0
         self._join_task = None
+        self._double_seen = None  # last button_double_count seen
 
     # -- helpers --
 
@@ -85,6 +87,7 @@ class WifiSetup:
                 if not booted:
                     booted = await self._boot_tick(t0, engine)
                 await self._button_tick(engine)
+                await self._double_tick(engine)
                 if self.state["hotspot_up"] and time.monotonic() - self._text_at > TEXT_REFRESH_S:
                     await self._hotspot_text()
                 if self.state["mode"] == "joined" and time.monotonic() - self._text_at > JOINED_LINGER_S:
@@ -124,6 +127,17 @@ class WifiSetup:
             self._button_at = time.monotonic()
         if await engine.ack_wifi_setup() and engine.status:
             engine.status["wifi_setup_requested"] = False  # until the poller refreshes it
+
+    async def _double_tick(self, engine):
+        """Each new double press shows the address: the IP, or the hotspot's while setup runs.
+        The first count seen (and a lower one after an engine restart) is the baseline."""
+        n = (engine.status or {}).get("button_double_count")
+        if not isinstance(n, int):
+            return
+        seen, self._double_seen = self._double_seen, n
+        if seen is None or n <= seen:
+            return
+        await (self._hotspot_text() if self.state["hotspot_up"] else self.show_ip())
 
     async def show_ip(self):
         try:

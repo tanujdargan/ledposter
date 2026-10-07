@@ -1,6 +1,6 @@
 # Engine protocol
 
-How the web app (or a script) talks to the display engine. Two Unix stream sockets, both set in the config:
+How the web app (or a script) talks to the display engine. Two Unix stream sockets, both set in the config (plus the [DDP and E1.31 inputs](#streaming-input-ddp-and-e131) on UDP):
 
 | config key | default | carries |
 |---|---|---|
@@ -47,8 +47,9 @@ Commands take effect from the next frame (within about 100ms). A `status` sent r
 | `show_text` | `text`: string (max 500 bytes, `""` clears), `seconds`: 0.5 to 86400 (default 5), `color` (optional, default white) | `ms` |
 | `ack_wifi_setup` | none | none |
 | `reload_config` | none | `restart_needed`: list of section names |
+| `set_stream` | `ddp` and/or `e131`: bool | `ddp`, `e131`: whether each receiver is now listening |
 | `set_fake_lux` | `lux`: number >= 0, or `null` | none (simulator build only) |
-| `sim_button` | `ms`: 1 to 60000 | none (simulator build only) |
+| `sim_button` | `ms`: 1 to 60000, `count`: 1 to 5 (default 1), `gap_ms`: 1 to 5000 (default 100) | none (simulator build only) |
 
 **`set_brightness`** sets the user brightness (the slider). It lasts until the engine restarts or `reload_config` runs; the web app persists it by writing `brightness.user` to the config.
 
@@ -96,7 +97,7 @@ The response echoes `mode`, `mode_name` (pattern name, media id, playlist name, 
 
 **`ack_wifi_setup`** clears `wifi_setup_requested` in the status (see [Button](#button)). `wifi_setup_count` keeps counting.
 
-**`reload_config`** re-reads the config file and applies what can change live: power ceiling and calibration, gamma, brightness settings (user, auto, curve, smoothing), `engine.preview_fps` and the playlists. If the running mode is a playlist, it restarts with the new definition. The file is checked first; if it is invalid (bad YAML, a value out of range, the running playlist removed or broken), the response is an error and the old settings stay.
+**`reload_config`** re-reads the config file and applies what can change live: power ceiling and calibration, gamma, brightness settings (user, auto, curve, smoothing), `engine.preview_fps`, the playlists, and the `ddp`, `e131` and `stream` sections (receivers are reopened only if their settings changed). If a DDP/E1.31 port can't be opened, everything else is still applied and the response is an error naming the port; that receiver stays off. If the running mode is a playlist, it restarts with the new definition. The file is checked first; if it is invalid (bad YAML, a value out of range, the running playlist removed or broken), the response is an error and the old settings stay.
 
 `restart_needed` lists the sections that changed but only take effect after an engine restart: `matrix` (anything about the panels), `sensors`, `engine` (socket paths), `button` (pin, chip, timings; `button.cycle` and `button.skip_playlist_items` are live), `fonts`. Empty list: everything was applied.
 
@@ -104,9 +105,16 @@ The response echoes `mode`, `mode_name` (pattern name, media id, playlist name, 
 {"id": 6, "ok": true, "restart_needed": ["matrix"]}
 ```
 
+**`set_stream`** turns the DDP and/or E1.31 receivers on or off without touching the config (the web app writes `ddp.enabled` / `e131.enabled` and sends this). Turning a receiver off while it is streaming returns the wall to its mode at once. Opening a port that is in use is an error (`ddp: UDP port 4048: bind: Address already in use`); the other receiver is still applied.
+
+```json
+{"id": 7, "cmd": "set_stream", "ddp": true}
+{"id": 7, "ok": true, "ddp": true, "e131": false}
+```
+
 **`set_fake_lux`** (simulator build only; the Pi build answers with an error) stands in for the BH1750 so the auto brightness curve can be tested without hardware. `null` means "no sensor". The value is read by the same polling and smoothing as a real sensor, within one `sensors.bh1750.poll_ms`.
 
-**`sim_button`** (simulator build only) holds the button down for `ms`, as if a finger were on it. It goes through the same 5ms polling, debounce and press classification as the real GPIO, so `{"ms": 100}` is a short press, `{"ms": 2500}` a long one (with the default `button.long_ms`). Needs `button.gpio` set in the config; otherwise the button is `off` and this is an error.
+**`sim_button`** (simulator build only) holds the button down for `ms`, as if a finger were on it. It goes through the same 5ms polling, debounce and press classification as the real GPIO, so `{"ms": 100}` is a short press, `{"ms": 2500}` a long one (with the default `button.long_ms`), and `{"ms": 80, "count": 2, "gap_ms": 100}` a double press. Needs `button.gpio` set in the config; otherwise the button is `off` and this is an error.
 
 ### Modes and settings
 
@@ -162,7 +170,8 @@ Same seed, same pictures: effects take their randomness from a seed (random per 
 
 One push button on a GPIO (`button:` in the config, README has the wiring). The engine polls it every 5ms; a level counts once it held for `debounce_ms`.
 
-- **Short press** (released before `long_ms`, default 2s): if a playlist is playing (and `button.skip_playlist_items` is true, the default), its next item; after its last item, or in any other mode, the next entry of `button.cycle`. The cycle continues after the last entry the button picked, even if the web app changed the mode since; an entry that fails (a missing playlist, say) is logged and skipped.
+- **Short press** (released before `long_ms`, default 2s; reported `double_ms` after the release, see double press): if external input (DDP/E1.31) is showing, the takeover ends first (the stream is ignored until it stops for `stream.timeout_s`) and the press then works on the mode underneath as below. If a playlist is playing (and `button.skip_playlist_items` is true, the default), its next item; after its last item, or in any other mode, the next entry of `button.cycle`. The cycle continues after the last entry the button picked, even if the web app changed the mode since; an entry that fails (a missing playlist, say) is logged and skipped.
+- **Double press** (two short presses, the second starting within `double_ms` of the first release; default 350, 0 turns it off and short presses are reported at once): `button_double_count` goes up by one. The web app watches it and shows the hostname and IP for `network.show_ip_s`. A long or very long press starting inside the window counts as itself (the short press before it is dropped).
 - **Long press** (released between `long_ms` and `very_long_ms`): display on/off, like `power`.
 - **Very long press** (held for `very_long_ms`, default 10s; fires while still held, the release does nothing): `wifi_setup_requested` becomes true, `wifi_setup_count` goes up by one, `wifi_setup_at` is set, the display turns on and shows "Wi-Fi setup" for 4s. Networking (milestone 6) watches these and clears the flag with `ack_wifi_setup`.
 
@@ -177,19 +186,21 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
  "lux": 50.0, "sensor": "ok",
  "power": true, "w": 128, "h": 192, "uptime_s": 312,
  "mode_settings": {}, "overlays": [], "button": "ok",
- "wifi_setup_requested": false, "wifi_setup_count": 0, "wifi_setup_at": null}
+ "wifi_setup_requested": false, "wifi_setup_count": 0, "wifi_setup_at": null, "button_double_count": 0,
+ "stream": {"active": false, "source": null, "fps": 0, "last_packet_ms_ago": null, "ddp": true, "e131": false}}
 ```
 
 | field | meaning |
 |---|---|
-| `mode` | `pattern`, `media`, `playlist`, `effect`, `clock`, `text` or `idle` |
-| `mode_name` | pattern name, media id, playlist name, effect id, or `clock`/`text`/`idle` |
+| `mode` | `pattern`, `media`, `playlist`, `effect`, `clock`, `text` or `idle`; `stream` while DDP/E1.31 input has taken over |
+| `mode_name` | pattern name, media id, playlist name, effect id, or `clock`/`text`/`idle`; `ddp` or `e131` while streaming |
 | `mode_settings` | the running mode's resolved settings (empty for pattern, media and playlist) |
 | `overlays` | what is drawn on top right now: `[]`, or the event name and/or `"text"`, e.g. `["kill", "text"]` |
 | `button` | `ok` (GPIO line open), `missing` (configured but it could not be opened; see the log), `off` (no `button.gpio`), `sim` (simulator) |
 | `wifi_setup_requested` | true after a very long button press, until `ack_wifi_setup` |
 | `wifi_setup_count` | very long presses since the engine started |
 | `wifi_setup_at` | unix time of the last one, or `null` |
+| `button_double_count` | double presses since the engine started (the web app shows the IP on each new one) |
 | `fps` | frames output per second, measured over the last second. The engine only redraws when the picture changes (and at least 10 times a second), so a still image shows about 10 |
 | `amps` | estimated panel current of the last frame, after the limiter. Never above `ceiling_amps` |
 | `amps_unlimited` | what the frame would draw at `brightness.effective` without the limiter |
@@ -203,10 +214,36 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
 | `lux` | latest sensor reading (unsmoothed), or `null` |
 | `sensor` | `ok`, `missing` (not found or read error; the engine retries every 5s), `fake` (simulator with `set_fake_lux`) |
 | `power` | false after `power {"on": false}` |
+| `stream.active` | external input is showing (the mode underneath is paused) |
+| `stream.source` | `ddp` or `e131`: where the last complete frame came from, `null` if none yet |
+| `stream.fps` | complete stream frames received per second, over the last second |
+| `stream.last_packet_ms_ago` | ms since the last valid packet, `null` if none yet |
+| `stream.ddp`, `stream.e131` | whether each receiver is listening |
 | `w`, `h` | logical canvas size |
 | `uptime_s` | seconds since the engine started |
 
 Current estimate: `sum of R+G+B / (255 * 3 * panel_size²) * amps_full_white_per_panel * output / 100`.
+
+## Streaming input (DDP and E1.31)
+
+Off by default (spec: Security). Turned on by `ddp.enabled` / `e131.enabled` in the config, or `set_stream`. Both listen on all interfaces.
+
+| config key | default | |
+|---|---|---|
+| `ddp.port` | 4048 | |
+| `e131.port` | 5568 | |
+| `e131.start_universe` | 1 | universe of the top-left pixel |
+| `e131.multicast` | false | also join 239.255.x.y for each universe |
+| `stream.apply_gamma` | true | incoming values are sRGB-like (WLED, LedFx) and go through `display.gamma`; false: shown as sent |
+| `stream.timeout_s` | 5 | after this long without a valid packet the wall goes back to its mode |
+
+**Pixel order**: RGB, 3 bytes per pixel, row-major from the top-left of the logical canvas (the same order as the preview frame): pixel `i` is at `x = i % w`, `y = i / w`. On the full wall that is 128 x 192 = 24576 pixels, 73728 bytes. In WLED/LedFx/xLights terms: a 128 wide, 192 high matrix, horizontal rows, starting top-left, not serpentine.
+
+**DDP**: version 1 header (10 bytes, 14 with the timecode flag); data type RGB 8-bit (`0x0B`; `0x01` and `0x00` are taken as RGB too, as LedFx and others send them); destination id 1 (or 0). `offset` is a byte offset into the frame; data past the end is clipped. If a sender ever sets the push flag, frames are shown on push; senders that never set it get every packet shown as it arrives. Queries, replies, other ids and data types, and packets shorter than their header + length are ignored.
+
+**E1.31**: data packets only (root vector 4, framing vector 2, DMP set-property with start code 0); every layer's flags/length must match the packet. Universe `start_universe + k` carries pixels `170k` to `170k + 169` in channels 1-510 (channels 511-512 unused). The full wall is 145 universes; the last one carries 96 pixels (288 channels). A packet whose sequence number is up to 20 behind the last one for its universe (or equal) is dropped. Priority is ignored (one source at a time), preview-data and stream-terminated packets are ignored, and synchronization packets are not needed. A frame is shown when every universe has arrived, or when a universe arrives a second time (so a sender covering only part of the canvas still works; universes it doesn't send keep their last values).
+
+**Takeover**: the first complete frame replaces the current mode (`status.mode` becomes `stream`). The mode underneath is paused, not restarted: `timeout_s` after the last valid packet (or at once when the receivers are turned off) it carries on where it was. A `set_mode` while streaming takes effect when the stream ends. Power, brightness and the limiter apply to streamed frames like any other. Receivers run on their own thread; the frame loop only copies the newest complete frame.
 
 ## Preview socket
 

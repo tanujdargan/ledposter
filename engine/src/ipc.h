@@ -169,10 +169,20 @@ struct Mailbox {
     }
     cv.notify_one();
   }
-  // Frame loop: sleeps until deadline, or until a job arrives.
+  // Any thread: wake the frame loop early (e.g. a stream frame arrived).
+  void wake() {
+    {
+      std::lock_guard<std::mutex> l(mu);
+      woken = true;
+    }
+    cv.notify_one();
+  }
+  bool woken = false;
+  // Frame loop: sleeps until deadline, or until a job arrives or wake().
   template <class TP> void wait_until(TP deadline) {
     std::unique_lock<std::mutex> l(mu);
-    cv.wait_until(l, deadline, [&] { return !jobs.empty(); });
+    cv.wait_until(l, deadline, [&] { return !jobs.empty() || woken; });
+    woken = false;
   }
   // Frame loop: runs the queued jobs and queues their replies.
   void run() {

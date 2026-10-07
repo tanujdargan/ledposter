@@ -15,7 +15,7 @@ vendor/   hzeller/rpi-rgb-led-matrix (git submodule, pinned)
 docs/     spec, architecture contracts, engine socket protocol (protocol.md), UI references, deviations
 ```
 
-Status: **milestone 6**, networking. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 added the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`. Milestone 5 added the engine-drawn modes: six generative effects (spider-sense ripple, web-shot trace, UAV radar sweep, plasma, fire, starfield), a clock, an idle screen and a text scroller, each with settings the engine describes (`list_modes`) and the web app's mode picker is built from; overlays on top of any mode (game hook events `kill`, `killstreak`, `death`, `win` via `POST /api/event` and `tools/game_hook.py`, and `show_text` messages); and the push button (short press: next mode or playlist item, 2s: display on/off, 10s: Wi-Fi setup request). Milestone 6 adds networking: `ledposter.local` over Avahi, stable DHCP, an optional static IP with automatic rollback, hostname from Settings, the IP on the wall at boot, and the `LEDWall-Setup` hotspot with a captive portal for first-time Wi-Fi setup.
+Status: **milestone 7**, Home Assistant and streaming input. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 added the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`. Milestone 5 added the engine-drawn modes: six generative effects (spider-sense ripple, web-shot trace, UAV radar sweep, plasma, fire, starfield), a clock, an idle screen and a text scroller, each with settings the engine describes (`list_modes`) and the web app's mode picker is built from; overlays on top of any mode (game hook events `kill`, `killstreak`, `death`, `win` via `POST /api/event` and `tools/game_hook.py`, and `show_text` messages); and the push button (short press: next mode or playlist item, 2s: display on/off, 10s: Wi-Fi setup request). Milestone 6 added networking: `ledposter.local` over Avahi, stable DHCP, an optional static IP with automatic rollback, hostname from Settings, the IP on the wall at boot, and the `LEDWall-Setup` hotspot with a captive portal for first-time Wi-Fi setup. Milestone 7 adds Home Assistant over MQTT (discovery: a light with brightness and effects, current and light sensors, a playlist select) and DDP / E1.31 streaming input that takes over the wall while a sender plays; a button double press shows the IP.
 
 ## Wiring assumptions
 
@@ -64,7 +64,7 @@ In `/boot/firmware/config.txt` set `dtparam=audio=off`. Then append `isolcpus=3`
 ```sh
 cd engine
 make test        # mapping, limiter, brightness curve, pattern, media, playlist, IPC parsing, effect,
-                 # text, overlay and button tests; runs on any machine (needs nlohmann-json, header
+                 # text, overlay, button and DDP/E1.31 parsing tests; runs on any machine (needs nlohmann-json, header
                  # only, and the vendor submodule for its font parser and fonts). With AddressSanitizer
                  # off the Pi, so an out-of-range pixel write fails the run
 make             # on the Pi: builds the library and ./ledengine
@@ -103,7 +103,7 @@ Text, the clock and on-wall messages use the BDF fonts that come with rpi-rgb-le
 
 The engine prints its estimated current draw and output brightness once a second, plus `(limited)` when the limiter is turning the frame down. Full white on six panels is about 36A unlimited, so the limiter holds it at `power.ceiling_amps` (13A): output brightness 36%, 12.96A.
 
-The flags only pick the starting mode. While it runs, the engine listens on `engine.socket` for commands (`status`, `set_brightness`, `set_auto_brightness`, `power`, `set_mode`, `list_modes`, `overlay`, `show_text`, `ack_wifi_setup`, `reload_config`) and streams its output on `engine.preview_socket`; both are in [docs/protocol.md](docs/protocol.md). From a shell, with `socat`:
+The flags only pick the starting mode. While it runs, the engine listens on `engine.socket` for commands (`status`, `set_brightness`, `set_auto_brightness`, `power`, `set_mode`, `list_modes`, `overlay`, `show_text`, `ack_wifi_setup`, `reload_config`, `set_stream`) and streams its output on `engine.preview_socket`; both are in [docs/protocol.md](docs/protocol.md). From a shell, with `socat`:
 
 ```sh
 echo '{"id":1,"cmd":"status"}' | sudo socat - UNIX-CONNECT:/run/ledposter/engine.sock
@@ -435,6 +435,104 @@ nmcli device wifi list                                  # what the Pi can see (2
 
 `sudo /usr/local/bin/ledposter-net rollback` does the DHCP revert from the note file by hand, and `journalctl -u NetworkManager -n 50` explains failed joins.
 
+## Streaming input (WLED, LedFx, xLights)
+
+The engine has a DDP receiver on UDP 4048 and an E1.31/sACN receiver on UDP 5568, both off by default. Turn them on in Settings > Integrations (or `ddp: {enabled: true}` / `e131: {enabled: true}` in the config). While frames arrive they replace whatever the wall shows; 5 seconds after the last packet it carries on with what it was showing. Brightness, power and the current limiter still apply. Details in [docs/protocol.md](docs/protocol.md#streaming-input-ddp-and-e131).
+
+Set the sender up as **one matrix 128 wide, 192 high, RGB, rows left to right starting at the top-left corner, not serpentine** (the engine maps that onto the panel snake itself):
+
+- **WLED** (as a sender, e.g. a WLED instance or WLED's virtual DDP output): add a DDP output to the wall's IP with 24576 LEDs, start 0, RGB. As a 2D setup: one panel, 128 x 192, no serpentine.
+- **LedFx**: add a device of type DDP, IP address of the wall, port 4048, pixel count 24576. In the device's matrix settings use 128 columns (rows follow), no snake. LedFx sends sRGB-ish colours; keep "Streamed colours: sRGB (apply gamma)".
+- **xLights**: an Ethernet controller at the wall's IP, protocol DDP (port 4048) or E1.31. Model: a horizontal Matrix with **192 strings of 128 nodes** (each string is one row), starting top-left, not serpentine, RGB order. For E1.31: 145 universes of 510 channels starting at the wall's first universe (Settings, default 1), unicast.
+
+With E1.31, universe `start` carries pixels 0-169, `start+1` pixels 170-339, and so on; the 145th carries the last 96 pixels. Unicast needs nothing more. Multicast (`e131.multicast: true`) joins one group per universe, and Linux allows 20 per socket by default: raise it with `sudo sysctl -w net.ipv4.igmp_max_memberships=160` or send unicast.
+
+If colours look washed out or too dark, flip "Streamed colours" (`stream.apply_gamma`): on (default) treats the input as sRGB and applies the wall's gamma; off shows values as sent, for senders that already gamma-correct.
+
+## Home Assistant
+
+The web app connects to an MQTT broker (Settings > Integrations: host, port, username, password, optional TLS) and announces itself with MQTT discovery. In Home Assistant you get one device, "LED Poster", with:
+
+- a **light**: on/off, brightness, and an effect list with the wall's modes and every playlist (`Playlist: name`)
+- **Current draw** (A) and **Ambient light** (lx) sensors
+- a **Playlist** select
+
+Commands from HA go through the same code as the app's buttons, so the schedule and quiet-hours cap still apply. Settings shows the connection state ("Connected", or the error). The entities show as unavailable while the web app is disconnected from the broker and also while the engine is offline. HA's brightness is the user setting (the app's slider): during quiet hours the wall is capped below it, and HA still shows the value you asked for.
+
+Alexa, Google Home and Apple Home: expose the light through Home Assistant like any other light: Nabu Casa Cloud or the `alexa` / `google_assistant` integrations (Settings > Voice assistants > Expose), and the HomeKit Bridge integration (include the `light` domain or this entity). On/off and brightness work by voice; effects stay in HA.
+
+Topics (for scripts): `ledposter/<device_id>/availability`, `.../light/state` and `.../light/set` (HA JSON light schema), `.../sensors`, `.../playlist/state` and `.../playlist/set`. Discovery configs are under `homeassistant/`. `device_id` defaults to `ledposter_` plus the Pi's MAC address.
+
+## Testing milestone 7 on the Pi
+
+Pull, update the venv (paho-mqtt 2.x comes from pip; Bookworm's apt has 1.6), build and test:
+
+```sh
+cd ~/ledposter && git pull && git submodule update --init
+cd engine && make test && make && make sim
+cd ../web && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest -q
+```
+
+Expected: `all engine tests passed`, and pytest reports `108 passed, 1 skipped` (the skipped test needs a `mosquitto` binary; with `sudo apt install -y mosquitto` it is `109 passed`).
+
+**Streaming input.** Start the engine and the web app as for milestone 6. In the app, Settings > Integrations: turn on DDP input and E1.31 input, Save. The engine log says `ddp: listening on UDP 4048` and `e131: listening on UDP 5568, universes 1 to 145` (`1 to 2` on the single 64x64 panel), and `status` has `"stream": {..., "ddp": true, "e131": true}`. If `ufw` is on (it is from milestone 8), `sudo ufw allow 4048/udp` and `sudo ufw allow 5568/udp` first.
+
+From a laptop on the same network, either:
+
+- **LedFx** (`pip install ledfx`, then `ledfx --open-ui`): Devices > Add device > DDP, IP of the wall, 24576 pixels (4096 for the single panel). Pick any effect (e.g. Energy) and play music.
+- **WLED** sender, or **xLights**: set up as in [Streaming input](#streaming-input-wled-ledfx-xlights).
+- No sender at hand: a test pattern from Python on the laptop. It sends a moving red/blue gradient by DDP for 10s (use `W, H = 64, 64` for the single panel):
+
+  ```sh
+  python3 - <<'EOF'
+  import socket, struct, time
+  W, H, WALL = 128, 192, ("ledposter.local", 4048)
+  s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  for n in range(300):
+      f = bytes(c for y in range(H) for x in range(W) for c in ((x * 2 + n) % 256, 0, (y + n) % 256))
+      for off in range(0, len(f), 1440):
+          d = f[off:off + 1440]
+          s.sendto(struct.pack("!BBBBIH", 0x40 | (off + 1440 >= len(f)), 0, 0x0B, 1, off, len(d)) + d, WALL)
+      time.sleep(1 / 30)
+  EOF
+  ```
+
+Expected:
+
+1. Within a frame of the first packets the wall shows the stream; the app's preview shows the same, with the pill "Stream · DDP" (or E1.31) and Settings shows "Receiving DDP at N fps". The gradient runs left to right and top to bottom; if it is mirrored, rotated or wraps, the sender's matrix isn't 128 wide, row-major, top-left, not serpentine.
+2. Colours: compare with the same content played from the library. If the stream looks washed out or too dark, flip "Streamed colours" and report which looks right for your sender.
+3. 5 seconds after the sender stops, the wall goes back to what it was showing, carrying on where it was (a playlist doesn't restart).
+4. A short button press while streaming ends the takeover and moves to the next mode as usual; the stream stays off the wall until the sender pauses for 5s. A game hook event (`tools/game_hook.py kill`) plays on top of the stream.
+5. Full-white stream (LedFx Single Color, white): `status` shows `limited: true` and `amps` at or under `ceiling_amps`.
+6. Turning DDP off in Settings while streaming returns the wall to its mode at once.
+7. Report the stream `fps` from `status` with LedFx at 60fps, and whether the wall's own `fps` keeps up (the Pi 3B has to copy and output each frame).
+
+**Double press.** Press the button twice quickly (under 0.35s apart): within about 4s the wall shows `ledposter.local` and the IP for 10s, and `status` counts `button_double_count`. A single short press still goes to the next mode, about 0.35s after release (`button.double_ms`; 0 turns double presses off). Report whether 0.35s feels right.
+
+**Home Assistant.** You need an MQTT broker. If HA runs the Mosquitto add-on, use that; otherwise on the Pi or any Linux box:
+
+```sh
+sudo apt install -y mosquitto mosquitto-clients
+sudo mosquitto_passwd -c /etc/mosquitto/passwd ledwall           # pick a password
+printf 'listener 1883\npassword_file /etc/mosquitto/passwd\n' | sudo tee /etc/mosquitto/conf.d/ledposter.conf
+sudo systemctl restart mosquitto
+```
+
+In HA: Settings > Devices & services > Add integration > MQTT, broker host and the same user (with the add-on, HA sets this up itself). Then in the wall's app, Settings > Integrations: MQTT on, broker host, port 1883, username and password, Save.
+
+Expected:
+
+1. Settings shows "Connected" next to MQTT within a few seconds. A wrong password shows "Error: Not authorized" (or "Bad user name or password"); a wrong host "Error: can't reach host:1883, retrying".
+2. HA > Settings > Devices shows "LED Poster" (model 128x192 LED wall, software version = the app's) with a light, Current draw, Ambient light and Playlist entities. `mosquitto_sub -h <broker> -u ledwall -P <pw> -t 'ledposter/#' -v` shows the state topics.
+3. The light: turn it off and on (the wall follows within a second), move brightness (the wall dims; the app's slider follows), pick an effect (Plasma, Clock, a test pattern, `Playlist: demo`). Changes made in the app show up in HA within about 3s.
+4. The Playlist select switches playlists; the sensors show amps and lux (lux unknown with no BH1750).
+5. With quiet hours active and capping at 20%, HA brightness 100% leaves the wall at 20% (HA shows the requested 100%, the user setting, not the capped value).
+6. Stop the engine: within a few seconds the entities show unavailable (they follow the engine as well as the MQTT connection). Start it: they come back. Stop the web app: unavailable via the broker's last will.
+7. Optional: expose the light to Alexa, Google Home or Apple Home through HA (see [Home Assistant](#home-assistant)) and try "turn off the LED Poster" and "set the LED Poster to 30%".
+
+Report: the stream fps from LedFx, how the colours look with and without gamma, and anything HA showed differently from the above.
+
 ## Troubleshooting
 
 - **Blank panel with `adafruit-hat-pwm`**: the GPIO4 to GPIO18 mod isn't there. Use `adafruit-hat`.
@@ -464,3 +562,7 @@ nmcli device wifi list                                  # what the Pi can see (2
 - **Join fails with "Wrong password" for a correct password**: 5GHz-only network (the Pi 3B is 2.4GHz only), or a WPA3-only network. Check `journalctl -u NetworkManager`.
 - **Static IP sheet says "Could not arm the DHCP rollback timer"**: the systemd units are not installed, or the user running the app may not start them (polkit rules). Nothing was changed; install `system/systemd/*` and `system/polkit/*`.
 - **Hostname changed but `ledposter.local` still answers**: Avahi caches on the clients for a bit; the old name stops within a minute. If `/etc/hosts` still has the old name, `ledposter-hosts.service` did not run: `sudo systemctl start ledposter-hosts.service`.
+- **Stream doesn't take over**: Settings must show DDP/E1.31 on, and `status` has `"stream": {"ddp": true, ...}`. `last_packet_ms_ago` staying `null` means nothing valid arrives: check the sender's IP and port, and the firewall (DDP 4048, E1.31 5568 UDP). The picture shifts or wraps: the sender's matrix isn't 128 wide, row-major, top-left, not serpentine.
+- **`ddp: UDP port 4048: bind: Address already in use`**: another program (or another engine) has the port.
+- **MQTT "Error: Not authorized" / "Bad user name or password"**: check the broker user in Settings. "can't reach host:port": broker host, port, or TLS on a plain port (1883) or off on a TLS port (8883).
+- **HA shows the device but it's unavailable**: the engine is offline, or the web app isn't connected; see Settings.

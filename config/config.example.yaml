@@ -59,6 +59,7 @@ button:
   debounce_ms: 30
   long_ms: 2000         # held this long, then released: display on/off
   very_long_ms: 10000   # held this long: Wi-Fi setup (fires while still held)
+  double_ms: 350        # two short presses this close: show the IP (0: off; short presses then act at once)
   skip_playlist_items: true  # short press in a playlist: its next item; after the last one, the next cycle entry
   # Short press: the next entry. Same fields as set_mode (docs/protocol.md);
   # quote colors ("ff0000") so YAML keeps them as text.
@@ -110,6 +111,13 @@ network:
   show_ip_s: 10                 # how long the hostname + IP stay on the wall at boot
   wifi_device: ''               # '' = first Wi-Fi device (wlan0 on the Pi)
 
-# Stored by Settings now, used from milestone 7.
-mqtt: {enabled: false, host: '', port: 1883, username: '', password: ''}
-ddp: {enabled: false}
+# Home Assistant over MQTT (web app). Optional keys: device_id (default: from the
+# MAC address), device_name, discovery_prefix (homeassistant), base_topic (ledposter).
+mqtt: {enabled: false, host: '', port: 1883, username: '', password: '', tls: false}
+
+# Streaming input (engine), off by default. Pixels are RGB, row-major from the
+# top-left of the 128x192 canvas. While frames arrive they replace the current
+# mode; timeout_s after the last packet the wall goes back to it.
+ddp: {enabled: false}                    # port: 4048
+e131: {enabled: false, start_universe: 1, multicast: false}  # port: 5568; 170 pixels per universe
+stream: {apply_gamma: true}              # true: input is sRGB, gets display.gamma; timeout_s: 5

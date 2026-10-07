@@ -61,7 +61,10 @@ class FakeEngine:
                       "limited": False, "ceiling_amps": 13.0,
                       "brightness": {"user": 100, "auto": None, "auto_enabled": True, "effective": 100, "output": 100},
                       "lux": None, "sensor": "missing", "power": True, "w": w, "h": h, "uptime_s": 1,
-                      "wifi_setup_requested": False, "wifi_setup_count": 0, "wifi_setup_at": None}
+                      "wifi_setup_requested": False, "wifi_setup_count": 0, "wifi_setup_at": None,
+                      "button_double_count": 0,
+                      "stream": {"active": False, "source": None, "fps": 0, "last_packet_ms_ago": None,
+                                 "ddp": False, "e131": False}}
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.started = threading.Event()
@@ -125,6 +128,11 @@ class FakeEngine:
         if cmd == "ack_wifi_setup":
             self.state["wifi_setup_requested"] = False
             return {"ok": True}
+        if cmd == "set_stream":
+            for k in ("ddp", "e131"):
+                if k in req:
+                    self.state["stream"][k] = bool(req[k])
+            return {"ok": True, "ddp": self.state["stream"]["ddp"], "e131": self.state["stream"]["e131"]}
         return {"ok": False, "error": f"unknown command {cmd!r}"}
 
     def hold_button(self):

@@ -5,6 +5,7 @@
 // min(user, BH1750 auto), then the limiter. The control and preview sockets
 // (ipc.h, docs/protocol.md) let the web app drive it and watch the output; the
 // push button (button.h) cycles modes, toggles power and asks for Wi-Fi setup.
+// DDP/E1.31 input (stream.h) takes over the wall while frames arrive.
 // Built with -DLEDPOSTER_SIM (make sim) it runs without the matrix library or I2C.
 #include <grp.h>
 #include <pwd.h>
@@ -30,6 +31,7 @@
 #include "media.h"
 #include "overlay.h"
 #include "patterns.h"
+#include "stream.h"
 
 #ifndef LEDPOSTER_FONTS_DIR  // the Makefile sets it to vendor/rpi-rgb-led-matrix/fonts
 #define LEDPOSTER_FONTS_DIR "/opt/ledposter/vendor/rpi-rgb-led-matrix/fonts"
@@ -279,6 +281,7 @@ struct Settings {
   AutoCurve curve;
   double smoothing_s;
   int preview_fps;
+  StreamConfig stream;
 };
 
 static Settings load_settings(YAML::Node cfg) {
@@ -303,6 +306,16 @@ static Settings load_settings(YAML::Node cfg) {
   s.smoothing_s = c["smoothing_s"].as<double>(3);
   s.preview_fps = cfg["engine"]["preview_fps"].as<int>(15);
   check(s.preview_fps >= 1 && s.preview_fps <= 30, "engine.preview_fps must be 1 to 30");
+  YAML::Node d = cfg["ddp"], e = cfg["e131"], sm = cfg["stream"];
+  StreamConfig &t = s.stream;
+  t.ddp = d["enabled"].as<bool>(false), t.ddp_port = d["port"].as<int>(4048);
+  t.e131 = e["enabled"].as<bool>(false), t.e131_port = e["port"].as<int>(5568);
+  t.start_universe = e["start_universe"].as<int>(1), t.multicast = e["multicast"].as<bool>(false);
+  t.apply_gamma = sm["apply_gamma"].as<bool>(true), t.timeout_s = sm["timeout_s"].as<double>(5);
+  check(t.ddp_port > 0 && t.ddp_port < 65536 && t.e131_port > 0 && t.e131_port < 65536,
+        "ddp.port and e131.port must be 1 to 65535");
+  check(t.start_universe >= 1 && t.start_universe <= 63999, "e131.start_universe must be 1 to 63999");
+  check(t.timeout_s > 0, "stream.timeout_s must be > 0");
   return s;
 }
 
@@ -320,6 +333,15 @@ struct State {
   bool wifi_requested = false;  // very long button press; cleared by ack_wifi_setup
   int wifi_count = 0;
   double wifi_at = NAN;  // unix time of the last request
+  int double_count = 0;  // double presses: the web app shows the IP
+  // External input: while streaming, the mode above is paused (not rendered)
+  // and resumes where it was when the stream stops. dismissed: a short press
+  // ended the takeover; the stream is ignored until it stops for timeout_s.
+  bool streaming = false, stream_dismissed = false;
+  int64_t paused_at = 0, stream_last_ms = -1;
+  uint64_t stream_seen = 0, stream_fps_base = 0;
+  double stream_fps = 0;
+  std::string stream_src;
 };
 
 // A config section as text, to spot changes that need a restart. The live
@@ -369,10 +391,13 @@ static PressClassifier load_button(YAML::Node b) {  // non-const: missing keys r
   c.debounce_ms = b["debounce_ms"].as<int>(30);
   c.long_ms = b["long_ms"].as<int>(2000);
   c.very_long_ms = b["very_long_ms"].as<int>(10000);
+  c.double_ms = b["double_ms"].as<int>(350);
   if (c.debounce_ms < 1 || c.debounce_ms > 500 || c.long_ms <= c.debounce_ms ||
       c.very_long_ms <= c.long_ms)
     throw std::runtime_error(
         "button: need debounce_ms from 1 to 500, and debounce_ms < long_ms < very_long_ms");
+  if (c.double_ms < 0 || c.double_ms > 1000)
+    throw std::runtime_error("button.double_ms must be 0 (off) to 1000");
   return c;
 }
 
@@ -470,12 +495,15 @@ int main(int argc, char **argv) {
   fprintf(stderr, "canvas %dx%d, %zu panels, mode %s\n", layout.width, layout.height,
           layout.panels.size(), st.info.name.c_str());
   const auto t0 = std::chrono::steady_clock::now();
+  StreamOut sout;
+  StreamReceiver receiver(layout.width, layout.height, sout);
 
   auto status = [&]() -> json {
     auto r = [](double v, double k) { return std::isnan(v) ? json() : json(std::round(v * k) / k); };
     const double lux = sensor.lux;
-    return {{"mode", st.info.kind},
-            {"mode_name", st.info.name},
+    const int64_t ago = st.stream_last_ms < 0 ? -1 : steady_ms() - st.stream_last_ms;
+    return {{"mode", st.streaming ? "stream" : st.info.kind},
+            {"mode_name", st.streaming ? st.stream_src : st.info.name},
             {"fps", r(st.fps, 10)},
             {"amps", std::floor(st.out.amps * 100) / 100},  // floor: never shows above the ceiling
             {"amps_unlimited", r(st.out.amps_unlimited, 100)},
@@ -498,6 +526,14 @@ int main(int argc, char **argv) {
             {"wifi_setup_requested", st.wifi_requested},
             {"wifi_setup_count", st.wifi_count},
             {"wifi_setup_at", std::isnan(st.wifi_at) ? json() : json(int64_t(st.wifi_at))},
+            {"button_double_count", st.double_count},
+            {"stream",
+             {{"active", st.streaming},
+              {"source", st.stream_src.empty() ? json() : json(st.stream_src)},
+              {"fps", r(st.stream_fps, 10)},
+              {"last_packet_ms_ago", ago < 0 ? json() : json(ago)},
+              {"ddp", receiver.ddp_on.load()},
+              {"e131", receiver.e131_on.load()}}},
             {"uptime_s", int64_t(std::chrono::duration<double>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count())}};
@@ -515,7 +551,13 @@ int main(int argc, char **argv) {
   YAML::Node ctl_cfg = YAML::Clone(cfg);
   const YAML::Node boot = YAML::Clone(cfg);
   ModeInfo cur = st.info;
+  StreamConfig scfg = st.s.stream;  // the receivers as asked for (ctl_mu)
   std::atomic<int> cycle_pos{-1};  // last button.cycle entry the button picked
+  // Frame loop: back to the paused mode, where it was.
+  auto end_stream = [&](int64_t t, bool dismissed) {
+    st.streaming = false, st.stream_dismissed = dismissed;
+    if (st.mode_t0 >= 0) st.mode_t0 += t - st.paused_at;
+  };
   auto install = [&](Mode mode, ModeInfo info) {
     st.mode = std::move(mode), st.info = info, st.mode_t0 = -1;
     std::lock_guard<std::mutex> l(cur_mu);
@@ -557,7 +599,12 @@ int main(int argc, char **argv) {
       if (!v.is_number() || !(v.get<double>() >= 1 && v.get<double>() <= 60000))
         throw std::runtime_error("'ms' must be a number from 1 to 60000");
       if (button.state != "sim") throw std::runtime_error("the button is off (set button.gpio in the config)");
-      button.simulate(int(v.get<double>()));
+      const json n = req.value("count", json(1)), gap = req.value("gap_ms", json(100));
+      if (!n.is_number_integer() || n.get<int>() < 1 || n.get<int>() > 5)
+        throw std::runtime_error("'count' must be 1 to 5");
+      if (!gap.is_number() || !(gap.get<double>() >= 1 && gap.get<double>() <= 5000))
+        throw std::runtime_error("'gap_ms' must be a number from 1 to 5000");
+      button.simulate(int(v.get<double>()), n.get<int>(), int(gap.get<double>()));
       return ok;
 #else
       throw std::runtime_error("sim_button only works in the simulator build (make sim)");
@@ -597,11 +644,28 @@ int main(int argc, char **argv) {
       for (const char *k : {"matrix", "sensors", "engine", "button", "fonts"})
         if (yaml_at(next, k) != yaml_at(boot, k)) restart.push_back(k);
       cfg = next;
-      return [&, s, mode, restart]() mutable {
+      std::string stream_err;  // a port that can't be opened doesn't stop the rest applying
+      try {
+        receiver.configure(scfg = s.stream);
+      } catch (const std::exception &e) {
+        stream_err = e.what();
+      }
+      return [&, s, mode, restart, stream_err]() mutable {
         st.s = s, sensor.tau_s = s.smoothing_s;
         if (mode) st.mode = std::move(*mode), st.mode_t0 = -1;
+        if (!stream_err.empty())
+          throw std::runtime_error("config applied, but stream input failed: " + stream_err);
         return json{{"restart_needed", restart}};
       };
+    }
+    if (cmd == "set_stream") {
+      if (!req.contains("ddp") && !req.contains("e131"))
+        throw std::runtime_error("set_stream needs 'ddp' and/or 'e131'");
+      StreamConfig c = scfg;
+      if (req.contains("ddp")) c.ddp = arg_bool(req, "ddp");
+      if (req.contains("e131")) c.e131 = arg_bool(req, "e131");
+      receiver.configure(scfg = c);
+      return [&] { return json{{"ddp", receiver.ddp_on.load()}, {"e131", receiver.e131_on.load()}}; };
     }
     if (cmd == "set_fake_lux") {
 #ifdef LEDPOSTER_SIM
@@ -628,6 +692,8 @@ int main(int argc, char **argv) {
     Job job;
     if (p == Press::Long) {
       job = [&] { return st.power = !st.power, ok(); };
+    } else if (p == Press::Double) {
+      job = [&] { return st.double_count++, ok(); };  // the web app shows the IP
     } else if (p == Press::VeryLong) {
       // Networking (milestone 6) watches wifi_setup_requested / wifi_setup_count.
       Overlay o = text_overlay(fonts, "Wi-Fi setup", 0xffffff, 4000);
@@ -654,6 +720,7 @@ int main(int argc, char **argv) {
         }
       }
       job = [&, next, idx, skip_items]() mutable {
+        if (st.streaming) end_stream(engine_ms(), true);  // then advance the mode underneath
         if (skip_items && st.mode.skip && st.mode_t0 >= 0 && st.mode.skip(engine_ms() - st.mode_t0))
           return ok();
         if (next) install(std::move(next->first), next->second), cycle_pos = idx;
@@ -678,19 +745,49 @@ int main(int argc, char **argv) {
   }
   button.start(on_press);
 
-  Frame frame(layout.width, layout.height), out(layout.width, layout.height);
+  sout.on_frame = [&] { mailbox.wake(); };
+  try {
+    receiver.configure(st.s.stream);
+  } catch (const std::exception &e) {
+    fprintf(stderr, "ledengine: stream input off: %s\n", e.what());
+  }
+  if (receiver.ddp_on) fprintf(stderr, "ddp: listening on UDP %d\n", st.s.stream.ddp_port);
+  if (receiver.e131_on)
+    fprintf(stderr, "e131: listening on UDP %d, universes %d to %d\n", st.s.stream.e131_port,
+            st.s.stream.start_universe,
+            st.s.stream.start_universe + universes_for(layout.width * layout.height) - 1);
+
+  Frame frame(layout.width, layout.height), out(layout.width, layout.height),
+      sframe(layout.width, layout.height);
   int64_t last_log = -1000, fps_t = 0, last_preview = -1000;
   int frames = 0;
   while (!g_stop) {
     using namespace std::chrono;
     mailbox.run();
     const int64_t t = duration_cast<milliseconds>(steady_clock::now() - t0).count();
-    if (st.mode_t0 < 0) st.mode_t0 = t;
-    const int64_t next = st.mode_t0 + st.mode.render(frame, t - st.mode_t0);
-    int64_t wake = next;
-    if (st.mode.gamma)
-      for (auto &v : frame.rgb) v = st.s.lut[v];
-    if (st.ov->active(t)) {  // on top of the mode, before brightness and the limiter
+    {
+      std::lock_guard<std::mutex> l(sout.mu);
+      st.stream_last_ms = sout.last_packet_ms;
+      const bool fresh = sout.frames != st.stream_seen && sout.rgb.size() == sframe.rgb.size();
+      if (fresh) sframe.rgb = sout.rgb, st.stream_seen = sout.frames, st.stream_src = sout.source;
+      if (fresh && receiver.any() && !st.stream_dismissed && !st.streaming)
+        st.streaming = true, st.paused_at = t;
+    }
+    const bool quiet = steady_ms() - st.stream_last_ms > st.s.stream.timeout_s * 1000;
+    if (st.streaming && (!receiver.any() || quiet)) end_stream(t, false);
+    if (st.stream_dismissed && (!receiver.any() || quiet)) st.stream_dismissed = false;
+    int64_t wake = t + 100;
+    if (st.streaming) {
+      frame.rgb = sframe.rgb;
+      if (st.s.stream.apply_gamma)
+        for (auto &v : frame.rgb) v = st.s.lut[v];
+    } else {
+      if (st.mode_t0 < 0) st.mode_t0 = t;
+      wake = st.mode_t0 + st.mode.render(frame, t - st.mode_t0);
+      if (st.mode.gamma)
+        for (auto &v : frame.rgb) v = st.s.lut[v];
+    }
+    if (st.ov->active(t)) {  // on top of the mode or stream, before brightness and the limiter
       st.ov->apply(frame, t, st.s.lut);
       wake = std::min(wake, t + fx::kFrameMs);
     }
@@ -700,7 +797,11 @@ int main(int argc, char **argv) {
                          st.s.ceiling);
     display.show(frame, st.out.pct);
     frames++;
-    if (t - fps_t >= 1000) st.fps = frames * 1000.0 / (t - fps_t), frames = 0, fps_t = t;
+    if (t - fps_t >= 1000) {
+      st.fps = frames * 1000.0 / (t - fps_t), frames = 0;
+      st.stream_fps = (st.stream_seen - st.stream_fps_base) * 1000.0 / (t - fps_t);
+      st.stream_fps_base = st.stream_seen, fps_t = t;
+    }
     if (preview && preview->wanted() && t - last_preview >= 1000 / st.s.preview_fps) {
       scale_frame(frame, st.out.pct, out);
       std::string msg = status().dump() + "\n";
@@ -717,5 +818,6 @@ int main(int argc, char **argv) {
     mailbox.wait_until(t0 + milliseconds(std::clamp(wake, t + 1, t + 100)));
   }
   button.halt();  // its callback uses everything declared after it
+  receiver.shutdown();  // its thread wakes the mailbox, which goes first
   return 0;
 }

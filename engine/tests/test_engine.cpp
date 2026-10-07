@@ -10,6 +10,7 @@
 #include "media.h"
 #include "patterns.h"
 #include "test_m5.h"
+#include "stream.h"
 
 static const std::vector<Panel> kSnake = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 2}, {1, 2}};
 
@@ -165,6 +166,177 @@ static void test_ipc() {
   assert(r1["ok"] == false && r1["id"] == "a" && r1["error"] == "nope");
 }
 
+
+// DDP packet: header (10 bytes, 14 with timecode) + data.
+static std::vector<uint8_t> ddp(uint8_t flags, uint32_t offset, std::vector<uint8_t> data,
+                                uint8_t type = 0x0B, uint8_t id = 1) {
+  std::vector<uint8_t> p = {flags, 0, type, id, uint8_t(offset >> 24), uint8_t(offset >> 16),
+                            uint8_t(offset >> 8), uint8_t(offset), uint8_t(data.size() >> 8),
+                            uint8_t(data.size())};
+  if (flags & 0x10) p.insert(p.end(), 4, 0);
+  p.insert(p.end(), data.begin(), data.end());
+  return p;
+}
+
+// A well-formed E1.31 data packet for universe u.
+static std::vector<uint8_t> e131(uint16_t u, uint8_t seq, const std::vector<uint8_t> &dmx,
+                                 uint8_t options = 0) {
+  const size_t n = 126 + dmx.size();
+  std::vector<uint8_t> p(n, 0);
+  auto put16 = [&](size_t at, uint32_t v) { p[at] = v >> 8, p[at + 1] = v; };
+  auto put32 = [&](size_t at, uint32_t v) { put16(at, v >> 16), put16(at + 2, v); };
+  put16(0, 0x0010);
+  memcpy(&p[4], "ASC-E1.17\0\0\0", 12);
+  put16(16, 0x7000 | (n - 16)), put32(18, 4);
+  put16(38, 0x7000 | (n - 38)), put32(40, 2);
+  memcpy(&p[44], "test", 4);
+  p[108] = 100, p[111] = seq, p[112] = options, put16(113, u);
+  put16(115, 0x7000 | (n - 115)), p[117] = 0x02, p[118] = 0xA1, put16(121, 1);
+  put16(123, dmx.size() + 1);
+  memcpy(&p[126], dmx.data(), dmx.size());
+  return p;
+}
+
+
+// Double press: two short presses with a gap under double_ms (button.h).
+static void test_double_press() {
+  auto run = [](PressClassifier c, std::vector<std::pair<int64_t, bool>> edges, int64_t until) {
+    std::vector<std::pair<int64_t, Press>> out;  // (time, press) in 5ms polls, like Button
+    bool level = false;
+    size_t e = 0;
+    for (int64_t t = 0; t <= until; t += 5) {
+      while (e < edges.size() && edges[e].first <= t) level = edges[e++].second;
+      const Press p = c.feed(level, t);
+      if (p != Press::None) out.push_back({t, p});
+    }
+    return out;
+  };
+  PressClassifier c;
+  c.double_ms = 350;
+  // A lone short press is reported double_ms after its (debounced) release.
+  auto r = run(c, {{100, true}, {200, false}}, 2000);
+  assert(r.size() == 1 && r[0].second == Press::Short && r[0].first == 555);
+  // Two quick presses: one Double on the second release, no Short.
+  r = run(c, {{100, true}, {200, false}, {400, true}, {500, false}}, 2000);
+  assert(r.size() == 1 && r[0].second == Press::Double && r[0].first == 530);
+  // Gap over the window: two shorts.
+  r = run(c, {{100, true}, {200, false}, {600, true}, {700, false}}, 2000);
+  assert(r.size() == 2 && r[0].second == Press::Short && r[1].second == Press::Short);
+  // Contact bounce in the gap is not a second press.
+  r = run(c, {{100, true}, {200, false}, {300, true}, {310, false}}, 2000);
+  assert(r.size() == 1 && r[0].second == Press::Short);
+  // Second press held long: reported as Long only; very long still fires while held.
+  r = run(c, {{100, true}, {200, false}, {400, true}, {3000, false}}, 4000);
+  assert(r.size() == 1 && r[0].second == Press::Long);
+  r = run(c, {{100, true}, {200, false}, {400, true}, {11000, false}}, 12000);
+  assert(r.size() == 1 && r[0].second == Press::VeryLong && r[0].first == 10400);
+  // Three presses: a double, then a short on its own.
+  r = run(c, {{100, true}, {200, false}, {400, true}, {500, false}, {700, true}, {800, false}}, 2000);
+  assert(r.size() == 2 && r[0].second == Press::Double && r[1].second == Press::Short);
+  // double_ms 0: shorts at once, never a double.
+  c.double_ms = 0;
+  r = run(c, {{100, true}, {200, false}, {400, true}, {500, false}}, 2000);
+  assert(r.size() == 2 && r[0].second == Press::Short && r[0].first == 230);
+  assert(std::string(press_name(Press::Double)) == "double");
+}
+
+static void test_stream() {
+  // DDP parsing.
+  auto pk = ddp(0x41, 300, {1, 2, 3, 4, 5, 6});
+  auto d = parse_ddp(pk.data(), pk.size());
+  assert(d && d->push && d->offset == 300 && d->len == 6 && d->data[0] == 1);
+  pk = ddp(0x50, 3, {9, 9, 9});  // timecode: 14-byte header
+  d = parse_ddp(pk.data(), pk.size());
+  assert(d && !d->push && d->offset == 3 && d->data[0] == 9);
+  for (uint8_t t : {0x00, 0x01}) assert(parse_ddp(ddp(0x41, 0, {1}, t).data(), 11));  // LedFx-style types
+  auto bad = [](const std::vector<uint8_t> &p) { return !parse_ddp(p.data(), p.size()); };
+  assert(bad(ddp(0x01, 0, {1, 2, 3})));              // version 0
+  assert(bad(ddp(0x81, 0, {1, 2, 3})));              // version 2
+  assert(bad(ddp(0x43, 0, {1, 2, 3})));              // query
+  assert(bad(ddp(0x45, 0, {1, 2, 3})));              // reply
+  assert(bad(ddp(0x41, 0, {1, 2, 3}, 0x1B)));        // RGBW
+  assert(bad(ddp(0x41, 0, {1, 2, 3}, 0x0B, 246)));   // JSON control
+  pk = ddp(0x41, 0, {1, 2, 3});
+  assert(!parse_ddp(pk.data(), 9) && !parse_ddp(pk.data(), pk.size() - 1));  // short
+  pk = ddp(0x50, 0, {});
+  assert(!parse_ddp(pk.data(), 12));  // timecode header cut off
+
+  // DDP assembly on a 4x2 canvas (24 bytes): per packet until push is seen, then on push.
+  Assembler a(4, 2, 1);
+  pk = ddp(0x40, 0, {10, 11, 12});
+  assert(a.ddp(pk.data(), pk.size()) == Assembler::kFrame && a.frame[0] == 10);
+  pk = ddp(0x40, 21, {7, 8, 9, 99, 99});  // runs off the end: clipped
+  assert(a.ddp(pk.data(), pk.size()) == Assembler::kFrame && a.frame[21] == 7 && a.frame[23] == 9);
+  pk = ddp(0x41, 3, {20, 21, 22});
+  assert(a.ddp(pk.data(), pk.size()) == Assembler::kFrame && a.frame[3] == 20 && a.frame[0] == 10);
+  pk = ddp(0x40, 6, {30, 31, 32});
+  assert(a.ddp(pk.data(), pk.size()) == Assembler::kPartial && a.frame[6] == 0);  // waits for push
+  pk = ddp(0x41, 1000, {1, 2, 3});  // offset past the canvas: valid, nothing written
+  assert(a.ddp(pk.data(), pk.size()) == Assembler::kFrame && a.frame[6] == 30);
+  pk = ddp(0x43, 0, {1});
+  assert(a.ddp(pk.data(), pk.size()) == Assembler::kIgnored);
+
+  // E1.31 parsing.
+  pk = e131(7, 3, {1, 2, 3});
+  auto e = parse_e131(pk.data(), pk.size());
+  assert(e && e->universe == 7 && e->sequence == 3 && e->len == 3 && e->data[2] == 3);
+  assert(parse_e131(e131(1, 0, std::vector<uint8_t>(512, 1)).data(), 638));
+  auto ebad = [](std::vector<uint8_t> p) { return !parse_e131(p.data(), p.size()); };
+  assert(!parse_e131(pk.data(), 125) && !parse_e131(pk.data(), pk.size() - 1));  // short / lengths off
+  pk = e131(7, 3, {1, 2, 3}), pk[4] = 'X';
+  assert(ebad(pk));                                     // not ACN
+  pk = e131(7, 3, {1, 2, 3}), pk[21] = 8;
+  assert(ebad(pk));                                     // extended (sync/discovery)
+  pk = e131(7, 3, {1, 2, 3}), pk[43] = 1;
+  assert(ebad(pk));                                     // framing vector
+  pk = e131(7, 3, {1, 2, 3}), pk[39] -= 1;
+  assert(ebad(pk));                                     // framing length
+  pk = e131(7, 3, {1, 2, 3}), pk[118] = 0;
+  assert(ebad(pk));                                     // DMP address/data type
+  pk = e131(7, 3, {1, 2, 3}), pk[124] += 1;
+  assert(ebad(pk));                                     // property count vs length
+  pk = e131(7, 3, {1, 2, 3}), pk[125] = 0xDD;
+  assert(ebad(pk));                                     // non-zero start code
+  assert(ebad(e131(7, 3, {1, 2, 3}, 0x80)));            // preview data
+  assert(ebad(e131(7, 3, {1, 2, 3}, 0x40)));            // stream terminated
+  assert(ebad(e131(0, 3, {1, 2, 3})));                  // universe 0
+
+  // Sequence numbers: within 20 behind (or equal) is stale; wraps at 255.
+  assert(!e131_stale(-1, 5) && e131_stale(5, 5) && e131_stale(5, 0) && !e131_stale(5, 6));
+  assert(!e131_stale(255, 0) && e131_stale(0, 255) && !e131_stale(0, 230));
+
+  // Universe -> pixel mapping on the full 128x192 canvas: 145 universes of 170 pixels,
+  // the last one has 24576 - 144*170 = 96 pixels.
+  assert(universes_for(128 * 192) == 145 && universes_for(170) == 1 && universes_for(171) == 2);
+  Assembler w(128, 192, 1);
+  std::vector<uint8_t> dmx(510);
+  for (int u = 1; u <= 145; u++) {
+    for (size_t i = 0; i < dmx.size(); i++) dmx[i] = u;
+    pk = e131(u, 0, u == 145 ? std::vector<uint8_t>(288, 145) : dmx);
+    assert(w.e131(pk.data(), pk.size()) == (u == 145 ? Assembler::kFrame : Assembler::kPartial));
+  }
+  assert(w.frame[0] == 1 && w.frame[169 * 3 + 2] == 1 && w.frame[170 * 3] == 2);
+  assert(w.frame[(144 * 170) * 3] == 145 && w.frame.back() == 145);
+  pk = e131(146, 0, dmx);
+  assert(w.e131(pk.data(), pk.size()) == Assembler::kIgnored);  // past the canvas
+  pk = e131(2, 0, std::vector<uint8_t>(510, 50));
+  assert(w.e131(pk.data(), pk.size()) == Assembler::kIgnored);  // stale: same sequence
+  pk = e131(2, 1, std::vector<uint8_t>(512, 50));               // 512 channels: last 2 unused
+  assert(w.e131(pk.data(), pk.size()) == Assembler::kPartial && w.frame[170 * 3] == 2);
+  assert(w.work[340 * 3] == 3);
+  // The sender only covers universe 2: when it repeats, the frame so far is published.
+  pk = e131(2, 2, std::vector<uint8_t>(510, 60));
+  assert(w.e131(pk.data(), pk.size()) == Assembler::kFrame && w.frame[170 * 3] == 50);
+  assert(w.work[170 * 3] == 60);
+
+  // start_universe offsets the mapping.
+  Assembler o(4, 2, 10);
+  pk = e131(9, 0, {1, 2, 3});
+  assert(o.e131(pk.data(), pk.size()) == Assembler::kIgnored);
+  pk = e131(10, 0, {1, 2, 3, 4, 5, 6, 7});  // 2 whole pixels + 1 stray channel
+  assert(o.e131(pk.data(), pk.size()) == Assembler::kFrame && o.frame[5] == 6 && o.frame[6] == 0);
+}
+
 int main(int argc, char **argv) {
   // Spec snake: chain index 0 is top-left and sits at the right end of the strip.
   Layout L(64, kSnake);
@@ -230,6 +402,8 @@ int main(int argc, char **argv) {
   test_brightness();
   test_ipc();
   test_m5();
+  test_stream();
+  test_double_press();
 
   if (argc > 1) {
     draw_pattern("panel-id", f, L, 0, 0);

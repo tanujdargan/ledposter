@@ -36,6 +36,13 @@ def test_network_status_and_hostname(authed):
     assert authed.post("/api/network/show_ip").status_code == 200
 
 
+def test_double_press_shows_ip_on_the_wall(authed, engine):
+    assert wait_for(lambda: authed.app.state.setup._double_seen == 0)  # the loop has a baseline
+    n = len(engine.texts)
+    engine.state["button_double_count"] = 1  # what a double press does in the engine
+    assert wait_for(lambda: ("ledposter.local\n192.168.1.23", 10) in engine.texts[n:], timeout=8)
+
+
 def test_show_ip_reaches_the_wall(authed, engine):
     authed.post("/api/network/show_ip")
     assert wait_for(lambda: ("ledposter.local\n192.168.1.23", 10) in engine.texts)

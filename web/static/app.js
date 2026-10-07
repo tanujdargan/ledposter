@@ -149,6 +149,7 @@ function modeLabel(st) {  // st: engine status with mode (kind) and mode_name
   if (kind === "effect") return (modes.find((x) => x.id === `effect:${name}`) || {}).name || name;
   const m = modes.find((x) => x.id === kind);
   if (m) return m.name;
+  if (kind === "stream") return `Stream · ${name === "e131" ? "E1.31" : "DDP"}`;
   return name ? `${kind} · ${name}` : kind;
 }
 let briDragging = false;
@@ -173,6 +174,11 @@ function applyStatus(s) {
   $("#mode-name").textContent = s.online ? modeLabel(e) : "Engine offline";
   $("#more-version").textContent = `LED Poster ${s.version}`;
   $("#set-version").textContent = s.version;
+  const mq = s.mqtt || "disabled";
+  $("#mq-status").textContent = mq === "disabled" ? "Off" : mq === "connected" ? "Connected" : mq === "connecting" ? "Connecting…" : mq.replace(/^error: /, "Error: ");
+  $("#mq-status").style.color = mq.startsWith("error") ? "var(--danger)" : "";
+  const sm = e.stream;
+  $("#stream-status").textContent = !sm ? "" : sm.active ? `Receiving ${sm.source === "e131" ? "E1.31" : "DDP"} at ${Math.round(sm.fps)} fps` : (sm.ddp || sm.e131) ? "Listening, nothing received recently" : "";
   if (views.current === "modes") renderModes();
   if (views.current === "playlist") renderPlaylistChips();
 }
@@ -639,7 +645,10 @@ function bindSettings() {
   $("#m-mapping").value = m.hardware_mapping; $("#m-size").value = m.panel_size; $("#m-slow").value = m.gpio_slowdown; $("#m-pwm").value = m.pwm_bits;
   $("#p-ceiling").value = p.ceiling_amps; $("#p-perpanel").value = p.amps_full_white_per_panel;
   $("#mq-enabled").checked = q.enabled; $("#mq-host").value = q.host; $("#mq-port").value = q.port; $("#mq-user").value = q.username; $("#mq-pass").value = q.password;
+  $("#mq-tls").checked = q.tls;
   $("#ddp-enabled").checked = settings.ddp.enabled;
+  $("#e131-enabled").checked = settings.e131.enabled; $("#e131-universe").value = settings.e131.start_universe;
+  $("#stream-gamma").value = settings.stream.apply_gamma ? "1" : "0";
   renderPanels();
 }
 function renderPanels() {
@@ -652,11 +661,17 @@ function renderPanels() {
 $("#m-panel-add").onclick = () => { settings.matrix.panels.push({ col: 0, row: settings.matrix.panels.length, rotate: 0 }); renderPanels(); };
 $("#m-panel-del").onclick = () => { if (settings.matrix.panels.length > 1) { settings.matrix.panels.pop(); renderPanels(); } };
 async function putSettings(okMsg) {
-  try { const r = await api("/api/settings", { method: "PUT", body: settings }); settings = r; bindSettings(); toast(r.restart_required ? "Saved. Restart the engine to apply matrix options." : okMsg); applyStatus(await api("/api/status")); }
+  try { const r = await api("/api/settings", { method: "PUT", body: settings }); settings = r; bindSettings(); toast(r.stream_error || (r.restart_required ? "Saved. Restart the engine to apply matrix options." : okMsg), !!r.stream_error); applyStatus(await api("/api/status")); }
   catch (e) { toast(e.message, true); }
 }
 $("#matrix-save").onclick = () => { Object.assign(settings.matrix, { hardware_mapping: $("#m-mapping").value, panel_size: +$("#m-size").value, gpio_slowdown: +$("#m-slow").value, pwm_bits: +$("#m-pwm").value }); settings.power = { ceiling_amps: +$("#p-ceiling").value, amps_full_white_per_panel: +$("#p-perpanel").value }; putSettings("Saved"); };
-$("#integrations-save").onclick = () => { settings.mqtt = { enabled: $("#mq-enabled").checked, host: $("#mq-host").value.trim(), port: +$("#mq-port").value || 1883, username: $("#mq-user").value, password: $("#mq-pass").value }; settings.ddp = { enabled: $("#ddp-enabled").checked }; putSettings("Saved. MQTT and DDP are used from milestone 7."); };
+$("#integrations-save").onclick = () => {
+  settings.mqtt = { enabled: $("#mq-enabled").checked, host: $("#mq-host").value.trim(), port: +$("#mq-port").value || 1883, username: $("#mq-user").value, password: $("#mq-pass").value, tls: $("#mq-tls").checked };
+  settings.ddp = { enabled: $("#ddp-enabled").checked };
+  settings.e131 = { ...settings.e131, enabled: $("#e131-enabled").checked, start_universe: +$("#e131-universe").value || 1 };
+  settings.stream = { apply_gamma: $("#stream-gamma").value === "1" };
+  putSettings("Saved");
+};
 $("#panel-test").onclick = async () => { try { await api("/api/mode", { method: "POST", body: { mode: "pattern", pattern: "panel-id" } }); toast("Panel ID pattern is on the wall"); } catch (e) { toast(e.message, true); } };
 $("#set-password").onclick = () => {
   const curp = h("input", { class: "input", type: "password", autocomplete: "current-password", required: "" }), np = h("input", { class: "input", type: "password", autocomplete: "new-password", minlength: 8, required: "" }), np2 = h("input", { class: "input", type: "password", autocomplete: "new-password", required: "" }), err = h("div", { class: "err" });

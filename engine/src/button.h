@@ -22,10 +22,14 @@
 #define LEDPOSTER_GPIO 1
 #endif
 
-enum class Press { None, Short, Long, VeryLong };
+enum class Press { None, Short, Long, VeryLong, Double };
 
 inline const char *press_name(Press p) {
-  return p == Press::Short ? "short" : p == Press::Long ? "long" : p == Press::VeryLong ? "very long" : "none";
+  return p == Press::Short     ? "short"
+         : p == Press::Long     ? "long"
+         : p == Press::VeryLong ? "very long"
+         : p == Press::Double   ? "double"
+                                : "none";
 }
 
 // Feed it the raw level (true = pressed) with a non-decreasing time in ms.
@@ -34,19 +38,34 @@ inline const char *press_name(Press p) {
 //   released after < long_ms        -> Short (on release)
 //   released after long_ms..very    -> Long (on release)
 //   still held at very_long_ms      -> VeryLong (right then; the release is ignored)
+// With double_ms > 0 a short press waits that long for a second one: two short
+// presses with a gap under double_ms are one Double (on the second release),
+// a lone short press is reported double_ms after its release. A long or very
+// long press that starts inside the window is reported as itself (the short
+// before it is dropped).
 struct PressClassifier {
-  int debounce_ms = 30, long_ms = 2000, very_long_ms = 10000;
-  bool stable = false, raw = false, very_fired = false;
-  int64_t raw_since = 0, press_start = 0;
+  int debounce_ms = 30, long_ms = 2000, very_long_ms = 10000, double_ms = 0;
+  bool stable = false, raw = false, very_fired = false, pending = false, second = false;
+  int64_t raw_since = 0, press_start = 0, released_at = 0;
 
   Press feed(bool pressed, int64_t t) {
     if (pressed != raw) raw = pressed, raw_since = t;
+    const bool second_coming = raw && raw_since - released_at <= double_ms;
+    if (pending && t - released_at > double_ms && !second_coming) {
+      pending = false;
+      return Press::Short;
+    }
     if (raw != stable && t - raw_since >= debounce_ms) {
       stable = raw;
       if (stable) {
         press_start = raw_since, very_fired = false;
+        second = pending && press_start - released_at <= double_ms;
+        pending = false;
       } else if (!very_fired) {
-        return raw_since - press_start >= long_ms ? Press::Long : Press::Short;
+        if (raw_since - press_start >= long_ms) return Press::Long;
+        if (second) return second = false, Press::Double;
+        if (double_ms <= 0) return Press::Short;
+        pending = true, released_at = raw_since;
       }
     }
     if (stable && raw && !very_fired && t - press_start >= very_long_ms) {
@@ -66,7 +85,9 @@ struct Button {
   int gpio = -1;
   std::function<void(Press)> on_press;
   std::atomic<bool> stop{false};
-  std::atomic<int64_t> fake_until{0};  // sim: pressed until this steady-clock ms
+  // sim: count presses of fake_ms each, fake_gap ms apart, from fake_start (steady-clock ms)
+  std::atomic<int64_t> fake_start{0};
+  std::atomic<int> fake_ms{0}, fake_gap{1}, fake_count{0};
   int fd = -1;
   std::thread th;
 
@@ -119,11 +140,14 @@ struct Button {
     if (ioctl(fd, GPIOHANDLE_GET_LINE_VALUES_IOCTL, &d) < 0) return false;
     return d.values[0] == 0;  // active low
 #else
-    return now_ms() < fake_until;
+    const int64_t e = now_ms() - fake_start, period = fake_ms + fake_gap;
+    return e >= 0 && e / period < fake_count && e % period < fake_ms;
 #endif
   }
 
-  void simulate(int ms) { fake_until = now_ms() + ms; }
+  void simulate(int ms, int count = 1, int gap = 100) {
+    fake_count = 0, fake_ms = ms, fake_gap = gap, fake_start = now_ms(), fake_count = count;
+  }
 
   void halt() {
     stop = true;

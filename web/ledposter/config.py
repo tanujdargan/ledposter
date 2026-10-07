@@ -34,8 +34,11 @@ DEFAULTS = {
     # Setup hotspot and on-wall IP display (M6). wifi_device "" = first Wi-Fi device.
     "network": {"hotspot_ssid": "LEDWall-Setup", "hotspot_ip": "10.42.0.1", "setup_timeout_s": 60,
                 "show_ip_s": 10, "wifi_device": ""},
-    "mqtt": {"enabled": False, "host": "", "port": 1883, "username": "", "password": ""},  # M7
-    "ddp": {"enabled": False},  # M7
+    # M7: MQTT/Home Assistant (web app) and DDP/E1.31 input (engine); both inputs off by default
+    "mqtt": {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "tls": False},
+    "ddp": {"enabled": False},
+    "e131": {"enabled": False, "start_universe": 1, "multicast": False},
+    "stream": {"apply_gamma": True},
 }
 
 

@@ -22,7 +22,8 @@ class FakeEngineStatus:
     """Just what WifiSetup.loop uses from the Engine client (docs/protocol.md Button fields)."""
     def __init__(self, online=True):
         self.online = online
-        self.status = {"wifi_setup_requested": False, "wifi_setup_count": 0, "wifi_setup_at": None}
+        self.status = {"wifi_setup_requested": False, "wifi_setup_count": 0, "wifi_setup_at": None,
+                       "button_double_count": 0}
         self.acks = 0
     setup_request = staticmethod(Engine.setup_request)
 
@@ -96,6 +97,30 @@ async def test_boot_with_network_shows_ip_once_engine_is_up(tmp_path):
     eng.online = True
     assert await s._boot_tick(0.0, eng) is True
     assert wall.texts == [("ledposter.local\n192.168.1.23", 10)] and not s.state["hotspot_up"]
+
+
+@sync
+async def test_double_press_shows_ip(tmp_path):
+    f, n, wall, s = make(tmp_path, connected=True)
+    eng = FakeEngineStatus()
+    eng.status["button_double_count"] = 3  # presses before the web app started: baseline only
+    await s._double_tick(eng)
+    assert wall.texts == []
+    eng.status["button_double_count"] = 4
+    await s._double_tick(eng)
+    await s._double_tick(eng)  # same count: once
+    assert wall.texts == [("ledposter.local\n192.168.1.23", 10)]
+    eng.status["button_double_count"] = 0  # engine restarted
+    await s._double_tick(eng)
+    eng.status["button_double_count"] = 1
+    await s._double_tick(eng)
+    assert len(wall.texts) == 2
+    await s.start("test")  # during setup it repeats the hotspot instructions instead
+    eng.status["button_double_count"] = 2
+    await s._double_tick(eng)
+    assert wall.texts[-1][0].startswith("Wi-Fi setup\nJoin LEDWall-Setup")
+    eng.status = None  # engine offline
+    await s._double_tick(eng)
 
 
 @sync

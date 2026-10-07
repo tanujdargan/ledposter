@@ -530,7 +530,7 @@ def test_sim_button(engine):
     for i in range(3):
         if i:
             press(60)
-            time.sleep(0.3)
+            time.sleep(0.7)  # a short press is reported button.double_ms (350) after its release
         _, data = frame_now(e)
         colours.append(tuple(data[:3]))
     assert [c.index(max(c)) for c in colours] == [0, 1, 2]  # red, green, blue
@@ -556,8 +556,16 @@ def test_sim_button(engine):
     st = e.ctl.wait(lambda s: not s["wifi_setup_requested"])
     assert st["wifi_setup_count"] == 1
 
+    assert st["button_double_count"] == 0
+    e.ctl.ok("sim_button", ms=60, count=2, gap_ms=100)  # double press: counted, the mode stays
+    st = e.ctl.wait(lambda s: s["button_double_count"] == 1)
+    time.sleep(0.6)
+    assert e.ctl.ok("status")["mode_name"] == st["mode_name"] == "plasma"
+
     r = e.ctl("sim_button", ms=0)
     assert r["ok"] is False and "'ms' must be a number from 1 to 60000" in r["error"]
+    r = e.ctl("sim_button", ms=60, count=9)
+    assert r["ok"] is False and "'count' must be 1 to 5" in r["error"]
 
 
 def test_sim_button_off_without_gpio(engine):

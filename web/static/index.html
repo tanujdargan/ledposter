@@ -261,7 +261,7 @@
     </div>
     <div class="section-title">Integrations</div>
     <div class="card">
-      <div class="row" style="padding:0 0 8px"><div class="grow"><span class="label">MQTT (Home Assistant)</span><span class="sub">Used from milestone 7</span></div><label class="switch"><input type="checkbox" id="mq-enabled"><i></i></label></div>
+      <div class="row" style="padding:0 0 8px"><div class="grow"><span class="label">MQTT (Home Assistant)</span><span class="sub" id="mq-status">Off</span></div><label class="switch"><input type="checkbox" id="mq-enabled"><i></i></label></div>
       <div class="inline">
         <label class="field" style="flex:2"><span>Broker host</span><input class="input" id="mq-host" placeholder="homeassistant.local"></label>
         <label class="field"><span>Port</span><input class="input" type="number" id="mq-port" min="1" max="65535"></label>
@@ -270,7 +270,14 @@
         <label class="field"><span>Username</span><input class="input" id="mq-user" autocomplete="off"></label>
         <label class="field"><span>Password</span><input class="input" type="password" id="mq-pass" autocomplete="new-password"></label>
       </div>
-      <div class="row" style="padding:0 0 8px"><div class="grow"><span class="label">DDP input (UDP 4048)</span><span class="sub">Lets WLED or LedFx stream to the wall; off by default</span></div><label class="switch"><input type="checkbox" id="ddp-enabled"><i></i></label></div>
+      <div class="row" style="padding:0 0 8px"><div class="grow"><span class="label">TLS</span><span class="sub">Encrypted connection, usually port 8883</span></div><label class="switch"><input type="checkbox" id="mq-tls"><i></i></label></div>
+      <div class="row" style="padding:0 0 8px"><div class="grow"><span class="label">DDP input (UDP 4048)</span><span class="sub">Lets WLED, LedFx or xLights stream to the wall; off by default</span></div><label class="switch"><input type="checkbox" id="ddp-enabled"><i></i></label></div>
+      <div class="row" style="padding:0 0 8px"><div class="grow"><span class="label">E1.31 / sACN input (UDP 5568)</span><span class="sub">170 pixels per universe; off by default</span></div><label class="switch"><input type="checkbox" id="e131-enabled"><i></i></label></div>
+      <div class="inline">
+        <label class="field"><span>First universe</span><input class="input" type="number" id="e131-universe" min="1" max="63999"></label>
+        <label class="field"><span>Streamed colours</span><select class="input" id="stream-gamma"><option value="1">sRGB (apply gamma)</option><option value="0">Already corrected</option></select></label>
+      </div>
+      <p class="help" id="stream-status" style="margin:0 0 8px"></p>
       <button class="btn primary block" id="integrations-save">Save integrations</button>
     </div>
     <div class="section-title">Maintenance</div>

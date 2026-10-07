@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import time
+from types import SimpleNamespace
 from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
@@ -17,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from python_multipart import MultipartParser
 
-from . import __version__, auth, config, net, schedule, wifisetup
+from . import __version__, auth, config, mqtt, net, schedule, wifisetup
 from .engine import Engine, EngineError, EngineOffline, mode_args
 from .media import Library
 from .transcode import MAX_BYTES, SUPPORTED
@@ -129,6 +130,7 @@ class Status(BaseModel):
     brightness: int = Field(description="The user's brightness setting, before the quiet-hours cap")
     quiet_cap: Optional[int] = Field(None, description="Active quiet-hours brightness cap, if any")
     canvas: CanvasSize
+    mqtt: str = Field(description="MQTT connection: disabled, connecting, connected or \"error: ...\"")
     version: str
     timezone: str
     time: str
@@ -244,21 +246,35 @@ class Mqtt(BaseModel):
     port: int = Field(1883, ge=1, le=65535)
     username: str = ""
     password: str = ""
+    tls: bool = Field(False, description="TLS with the system CA store (usually port 8883)")
 
 
 class Ddp(BaseModel):
     enabled: bool = False
 
 
+class E131(BaseModel):
+    enabled: bool = False
+    start_universe: int = Field(1, ge=1, le=63999, description="Universe of the top-left pixel; 170 pixels per universe")
+    multicast: bool = Field(False, description="Also join the multicast groups (unicast needs nothing)")
+
+
+class StreamSettings(BaseModel):
+    apply_gamma: bool = Field(True, description="Treat incoming colours as sRGB and apply the wall's gamma")
+
+
 class Settings(BaseModel):
     matrix: MatrixSettings
     power: PowerSettings
-    mqtt: Mqtt = Field(description="Stored now, used by the MQTT client (milestone 7)")
-    ddp: Ddp = Field(description="Stored now, used by the engine's DDP receiver (milestone 7)")
+    mqtt: Mqtt = Field(description="MQTT broker for Home Assistant discovery")
+    ddp: Ddp = Field(description="DDP input on UDP 4048 (WLED, LedFx, xLights)")
+    e131: E131 = Field(E131(), description="E1.31/sACN input on UDP 5568")
+    stream: StreamSettings = StreamSettings()
 
 
 class SettingsSaved(Settings):
     restart_required: bool = Field(description="Matrix options only apply when the engine restarts")
+    stream_error: Optional[str] = Field(None, description="The engine couldn't open a DDP/E1.31 port")
 
 
 class TokenCreate(BaseModel):
@@ -428,8 +444,9 @@ class HostnameSet(BaseModel):
 
 # -- app -----------------------------------------------------------------------------
 
-def create_app(data_dir=None, net_runner=None):
-    """`net_runner` replaces the subprocess runner for nmcli & co (tests, LEDPOSTER_FAKE_NET)."""
+def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
+    """`net_runner` replaces the subprocess runner for nmcli & co (tests, LEDPOSTER_FAKE_NET);
+    `mqtt_client_factory` the paho client (tests)."""
     data_dir = data_dir or config.data_dir()
     app = FastAPI(title="ledposter", version=__version__, description=DESCRIPTION,
                   openapi_tags=[{"name": "auth"}, {"name": "control"}, {"name": "media"},
@@ -502,7 +519,9 @@ def create_app(data_dir=None, net_runner=None):
         await st.engine.start()
         await st.library.start()
         tasks = [asyncio.create_task(schedule_loop()), asyncio.create_task(st.setup.loop(st.engine))]
+        await st.mqtt.apply(st.cfg["mqtt"])
         yield
+        await st.mqtt.stop()
         for task in tasks:
             task.cancel()
         if st.save_task and not st.save_task.done():
@@ -675,34 +694,67 @@ def create_app(data_dir=None, net_runner=None):
         return Ok()
 
     # -- status and control ----------------------------------------------------------
+    # The act_* functions are shared by the REST API and MQTT (mqtt.py).
+
+    async def refresh_modes():
+        try:
+            st.engine_modes = (await st.engine.call("list_modes"))["modes"]
+        except EngineError as e:  # offline, or an engine without list_modes
+            log.info("list_modes: %s", e)
+
+    async def snapshot(fresh=False):
+        """Engine status for /api/status and MQTT; fresh: ask the engine now (the poller's copy
+        can be 2s old), and get list_modes if it is still unknown."""
+        if fresh and st.engine.online:
+            try:
+                st.engine.status = {k: v for k, v in (await st.engine.call("status")).items() if k not in ("id", "ok")}
+            except EngineError:
+                pass
+        if fresh and st.engine.online and st.engine_modes is None:
+            await refresh_modes()
+        return {"online": st.engine.online, "engine": st.engine.status, "brightness": int(st.cfg["brightness"]["user"])}
+
+    async def act_power(on):
+        await engine_call("power", on=on)
+
+    async def act_brightness(value):
+        st.cfg["brightness"]["user"] = value
+        save_soon()
+        await engine_call("set_brightness", value=schedule.clamp(value, st.scheduler.cap))
+
+    async def act_mode(args):
+        if args["mode"] == "media" and args.get("media") not in st.library.items:
+            raise HTTPException(404, "No such media item")
+        if args["mode"] == "media" and st.library.items[args["media"]]["status"] != "ready":
+            raise HTTPException(409, "That item is not transcoded yet")
+        if args["mode"] == "playlist" and args.get("playlist") not in st.cfg["playlists"]:
+            raise HTTPException(404, "No such playlist")
+        await engine_call("set_mode", **mode_args(args))
+
+    st.mqtt = mqtt.Bridge(SimpleNamespace(
+        power=act_power, brightness=act_brightness, mode=act_mode, snapshot=snapshot,
+        mode_defs=lambda: [m.model_dump() for m in mode_defs(st.engine_modes, sorted(st.cfg["playlists"]))],
+        playlists=lambda: sorted(st.cfg["playlists"])),
+        __version__, mqtt_client_factory or mqtt.paho_client)
 
     @app.get("/api/status", response_model=Status, tags=["control"])
     async def status(who=Depends(require_auth)):
-        if st.engine.online:  # live when possible; the poller's copy can be 2s old
-            try:
-                fresh = await st.engine.call("status")
-                fresh.pop("id", None), fresh.pop("ok", None)
-                st.engine.status = fresh
-            except EngineError:
-                pass
+        snap = await snapshot(fresh=True)
         now = dt.datetime.now().astimezone()
         w, h = config.canvas_size(st.cfg)
-        return Status(online=st.engine.online, engine=st.engine.status,
-                      brightness=int(st.cfg["brightness"]["user"]), quiet_cap=st.scheduler.cap,
-                      canvas=CanvasSize(w=w, h=h), version=__version__,
-                      timezone=now.tzname() or "", time=now.strftime("%H:%M"))
+        return Status(online=snap["online"], engine=snap["engine"], brightness=snap["brightness"],
+                      quiet_cap=st.scheduler.cap, canvas=CanvasSize(w=w, h=h), mqtt=st.mqtt.status,
+                      version=__version__, timezone=now.tzname() or "", time=now.strftime("%H:%M"))
 
     @app.post("/api/power", response_model=Ok, tags=["control"])
     async def power(body: Power, who=Depends(require_auth)):
-        await engine_call("power", on=body.on)
+        await act_power(body.on)
         return Ok()
 
     @app.post("/api/brightness", response_model=Ok, tags=["control"],
               summary="Set brightness (clamped by the quiet-hours cap while it is active)")
     async def brightness(body: Brightness, who=Depends(require_auth)):
-        st.cfg["brightness"]["user"] = body.value
-        save_soon()
-        await engine_call("set_brightness", value=schedule.clamp(body.value, st.scheduler.cap))
+        await act_brightness(body.value)
         return Ok()
 
     @app.post("/api/auto_brightness", response_model=Ok, tags=["control"])
@@ -718,11 +770,7 @@ def create_app(data_dir=None, net_runner=None):
                          "text, idle and test patterns, each with its settings schema. While the engine is "
                          "offline the last answer is used; before any answer, only media and test patterns.")
     async def modes(who=Depends(require_auth)):
-        try:
-            r = await st.engine.call("list_modes")
-            st.engine_modes = r["modes"]
-        except EngineError as e:  # offline, or an engine without list_modes
-            log.info("list_modes: %s", e)
+        await refresh_modes()
         return mode_defs(st.engine_modes, sorted(st.cfg["playlists"]))
 
     @app.post("/api/event", response_model=EventResult, tags=["control"],
@@ -742,14 +790,7 @@ def create_app(data_dir=None, net_runner=None):
 
     @app.post("/api/mode", response_model=Ok, tags=["control"])
     async def set_mode(body: ModeRequest, who=Depends(require_auth)):
-        args = body.model_dump()
-        if args["mode"] == "media" and args.get("media") not in st.library.items:
-            raise HTTPException(404, "No such media item")
-        if args["mode"] == "media" and st.library.items[args["media"]]["status"] != "ready":
-            raise HTTPException(409, "That item is not transcoded yet")
-        if args["mode"] == "playlist" and args.get("playlist") not in st.cfg["playlists"]:
-            raise HTTPException(404, "No such playlist")
-        await engine_call("set_mode", **mode_args(args))
+        await act_mode(body.model_dump())
         return Ok()
 
     # -- media -----------------------------------------------------------------------
@@ -972,24 +1013,34 @@ def create_app(data_dir=None, net_runner=None):
     def settings_model():
         c = st.cfg
         return Settings(matrix=MatrixSettings(**{k: c["matrix"][k] for k in MatrixSettings.model_fields}),
-                        power=PowerSettings(**c["power"]), mqtt=Mqtt(**c["mqtt"]), ddp=Ddp(**c["ddp"]))
+                        power=PowerSettings(**c["power"]), mqtt=Mqtt(**c["mqtt"]), ddp=Ddp(**c["ddp"]),
+                        e131=E131(**c["e131"]), stream=StreamSettings(**c["stream"]))
 
     @app.get("/api/settings", response_model=Settings, tags=["settings"])
     def get_settings(who=Depends(require_auth)):
         return settings_model()
 
     @app.put("/api/settings", response_model=SettingsSaved, tags=["settings"],
-             summary="Write matrix, power, MQTT and DDP settings to config")
+             summary="Write matrix, power, MQTT, DDP and E1.31 settings to config")
     async def put_settings(body: Settings, who=Depends(require_auth)):
         before = settings_model()
         st.cfg["matrix"].update(body.matrix.model_dump())
         st.cfg["power"] = body.power.model_dump()
-        st.cfg["mqtt"] = body.mqtt.model_dump()
-        st.cfg["ddp"] = body.ddp.model_dump()
+        for k in ("mqtt", "ddp", "e131", "stream"):  # update: keeps keys the UI doesn't show (ports, ids)
+            st.cfg[k].update(getattr(body, k).model_dump())
         save()
+        stream_error = None
+        if (before.ddp.enabled, before.e131.enabled) != (body.ddp.enabled, body.e131.enabled):
+            try:
+                await st.engine.call("set_stream", ddp=body.ddp.enabled, e131=body.e131.enabled)
+            except EngineOffline:
+                pass  # the engine reads the config when it starts
+            except EngineError as e:
+                stream_error = str(e)
         needed = await reload()
+        await st.mqtt.apply(st.cfg["mqtt"])
         restart = bool(needed) or before.matrix != body.matrix
-        return SettingsSaved(**body.model_dump(), restart_required=restart)
+        return SettingsSaved(**body.model_dump(), restart_required=restart, stream_error=stream_error)
 
     # -- network ---------------------------------------------------------------------
 

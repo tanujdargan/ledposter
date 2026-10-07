@@ -30,9 +30,9 @@ Spec: automatic rollback to DHCP if the wall is unreachable 2 minutes after a st
 
 The same pattern updates `/etc/hosts` after a hostname change (`hostnamectl` does not touch it): `ledposter-hosts.service` runs `ledposter-net hosts` as root. An alternative is to install `libnss-myhostname` and skip the file; M8 can pick either.
 
-## M6: the IP is shown on the wall at boot, from Settings, and on a button press pending an engine hook
+## M6: the IP is shown on the wall at boot, from Settings, and on a button double press (done in M7)
 
-Spec: show the current IP on the wall for 10s at boot and on a button press. Boot: the web app sends `show_text` once the engine is reachable and the network is up (the web app starts at boot, so this is "at boot" plus every web app restart). Settings has "Show address on the wall". The button's short (next mode), long (power) and very long (10s, Wi-Fi setup) presses are all taken by the spec, so the choice is: **a double press shows the hostname and IP for 10s**. That needs the engine to report it; the web app watches the engine status for a `button_double_presses` counter (pending, M5/M7 engine change, like `wifi_setup_requested`) and sends `show_text`. Until the engine has it, boot and Settings cover the requirement. Not done in M6 because engine/ is M5's.
+Spec: show the current IP on the wall for 10s at boot and on a button press. Boot: the web app sends `show_text` once the engine is reachable and the network is up (the web app starts at boot, so this is "at boot" plus every web app restart). Settings has "Show address on the wall". The button's short (next mode), long (power) and very long (10s, Wi-Fi setup) presses are all taken by the spec, so the choice is: **a double press shows the hostname and IP** for `network.show_ip_s` (10s). Done in M7: the engine classifies double presses (`button.double_ms`, default 350ms) and counts them in status as `button_double_count`; the web app's setup loop (`wifisetup.py`) sends `show_text` on each new one (the hotspot instructions instead while setup runs). The cost: a short press acts `double_ms` later, since the engine waits to see whether a second press follows; `double_ms: 0` turns double presses off and makes short presses immediate again.
 
 ## M6: on a fresh wall the admin password is set before Wi-Fi is joined
 
@@ -48,3 +48,14 @@ Threat model, briefly:
 ## M6: how the engine's `show_text` and `wifi_setup_requested` are used
 
 M6 was built in parallel with M5 and verified against `docs/protocol.md` as M5 built it. The networking code only touches the engine through `Engine.show_text(text, seconds)`, `Engine.setup_request(status)` and `Engine.ack_wifi_setup()` in `web/ledposter/engine.py`. `show_text` takes `text` (max 500 bytes, the renderer wraps and honours `\n`) and `seconds` (0.5 to 86400); the wall texts stay well under both. `wifi_setup_requested` is a boolean that stays true until `ack_wifi_setup`: the web app raises the hotspot when it sees it, then acks; if the hotspot cannot come up it still acks (otherwise the flag would re-trigger every poll) and does not retry for 30s. The engine shows its own "Wi-Fi setup" text for 4s on the hold; the web app's hotspot text replaces it a few seconds later.
+## M7: `paho-mqtt` 2.x from pip
+
+The stack names paho-mqtt. Bookworm's `python3-paho-mqtt` is 1.6, whose callback API differs; the web app uses the 2.x API (`CallbackAPIVersion.VERSION2`), so `requirements.txt` pins `paho-mqtt>=2,<3`, installed into the venv with pip. Pure Python.
+
+## M7: the HA effect list has the modes that need no choice, plus playlists
+
+Spec: effect list = modes and playlists. Modes that need the user to pick something first (the "Media item" mode needs an item; the generic "Playlist" mode needs a name) are not effects on their own. Each playlist is an effect instead (`Playlist: name`), and modes with settings run at the engine's defaults (Solid colour is white). The list comes from the engine's `list_modes`, through the same mapping as the app's mode picker. A single media item can be played from HA by putting it in a playlist.
+
+## M7: E1.31 multicast and the Linux group limit
+
+Spec: E1.31 receiver for 128 x 192 pixels (145 universes). Unicast works with no setup. With `e131.multicast: true` the engine joins one multicast group per universe, but Linux allows 20 groups per socket by default (`net.ipv4.igmp_max_memberships`); the engine joins what it can and logs how many. Raising the sysctl is left to the user (README); the M8 install script may set it.
