@@ -108,10 +108,12 @@ def amps_of(data):
 
 
 class Engine:
-    def __init__(self, *args, user=100, extra=""):
+    def __init__(self, *args, user=100, extra="", config=None):
         self.dir = Path(tempfile.mkdtemp(prefix="lpipc", dir="/tmp"))  # short: socket paths max ~104 chars
         self.ctl_path, self.prev_path = self.dir / "engine.sock", self.dir / "frames.sock"
         self.write_config(user=user, extra=extra)
+        if config is not None:  # {dir} is replaced with the engine's temp dir
+            (self.dir / "config.yaml").write_text(config.replace("{dir}", str(self.dir)))
         self.make_media("grey", [(100, 100, 100), (150, 150, 150)])
         self.log = open(self.dir / "engine.log", "wb")
         self.proc = subprocess.Popen([str(ENGINE), *args], stderr=self.log,
@@ -570,3 +572,17 @@ def test_start_flags(engine):
     assert engine("--mode", "clock").ctl.ok("status")["mode"] == "clock"
     st = engine("--text", "hi there").ctl.ok("status")
     assert st["mode"] == "text" and st["mode_settings"]["text"] == "hi there"
+
+
+def test_minimal_config_starts(engine):
+    """The web app writes config.yaml from its own defaults: no auto_curve, sensors or display
+    sections. The engine fills in defaults instead of refusing to start."""
+    e = engine("--effect", "plasma", config="""version: 1
+matrix: {panel_size: 64, panels: [{col: 0, row: 0}, {col: 1, row: 0}, {col: 1, row: 1}, {col: 0, row: 1}, {col: 0, row: 2}, {col: 1, row: 2}]}
+brightness: {user: 100, auto: true}
+engine: {socket: {dir}/engine.sock, preview_socket: {dir}/frames.sock}
+playlists: {}
+""")
+    st = e.ctl.ok("status")
+    assert st["mode_name"] == "plasma" and st["ceiling_amps"] == 13.0 and st["button"] == "off"
+    assert e.ctl.ok("reload_config")["restart_needed"] == []

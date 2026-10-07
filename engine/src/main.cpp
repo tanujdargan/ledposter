@@ -154,9 +154,12 @@ static Mode player(const std::string &name,
   return media_mode(name, std::move(clips), Playlist(std::move(ms), loop, shuffle));
 }
 
-static Mode playlist_mode(const YAML::Node &cfg, const std::string &name,
+// Config readers take YAML::Node by value: non-const lookups of a missing
+// section read as defaults instead of throwing (the web app writes configs
+// without the sections it doesn't manage).
+static Mode playlist_mode(YAML::Node cfg, const std::string &name,
                           const std::string &media_dir, const Layout &L) {
-  const YAML::Node p = cfg["playlists"][name];
+  YAML::Node p = cfg["playlists"][name];
   if (!p) throw std::runtime_error("no playlist '" + name + "' under playlists:");
   std::vector<std::pair<std::string, int64_t>> items;
   for (const auto &it : p["items"]) {
@@ -265,7 +268,7 @@ struct Settings {
   int preview_fps;
 };
 
-static Settings load_settings(const YAML::Node &cfg) {
+static Settings load_settings(YAML::Node cfg) {
   auto check = [](bool ok, const char *what) {
     if (!ok) throw std::runtime_error(what);
   };
@@ -274,7 +277,7 @@ static Settings load_settings(const YAML::Node &cfg) {
   s.amps_full = cfg["power"]["amps_full_white_per_panel"].as<double>(6.0);
   check(s.ceiling > 0 && s.amps_full > 0, "power: ceiling_amps and amps_full_white_per_panel must be > 0");
   s.lut = gamma_lut(cfg["display"]["gamma"].as<double>(2.2));
-  const YAML::Node b = cfg["brightness"], c = b["auto_curve"];
+  YAML::Node b = cfg["brightness"], c = b["auto_curve"];
   s.user = b["user"].as<int>(cfg["matrix"]["brightness"].as<int>(100));  // M1/M2 configs
   check(s.user >= 0 && s.user <= 100, "brightness.user must be 0 to 100");
   s.auto_on = b["auto"].as<bool>(true);
@@ -401,7 +404,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   const Layout &layout = *L;
-  const YAML::Node bh = cfg["sensors"]["bh1750"], eng = cfg["engine"];
+  YAML::Node bh = cfg["sensors"]["bh1750"], eng = cfg["engine"];
   const std::string sock = eng["socket"].as<std::string>("/run/ledposter/engine.sock");
   const std::string psock = eng["preview_socket"].as<std::string>("/run/ledposter/frames.sock");
   // Opened before the matrix starts (it drops root); polled from start() below.

@@ -8,6 +8,7 @@ engine/   C++ display engine (owns the matrix, frame loop, brightness and limite
 web/      Python package `ledposter`: FastAPI web app + REST API, transcoder, engine client
 web/static  the PWA (vanilla JS, no build step)
 config/   example YAML configs (all hardware tunables live here)
+tools/    game_hook.py: sends game events to the wall from a PC (stdlib only)
 vendor/   hzeller/rpi-rgb-led-matrix (git submodule, pinned)
 docs/     spec, architecture contracts, engine socket protocol (protocol.md), UI references, deviations
 ```
@@ -243,6 +244,20 @@ Open `http://<pi>:8080/`. The first visit asks for an admin password (stored as 
 
 Uploads go to `$LEDPOSTER_DATA/media/<id>/` and are transcoded one at a time by a background worker with `ledposter.transcode`; the item's settings (scale, filter, crop, position, speed, dither) can be changed in the editor, which re-transcodes. Playlists are written to the config's `playlists:` section in the engine's format, followed by `reload_config`. The schedule (on/off times, quiet-hours brightness cap) is enforced by the web app's own scheduler task. If the engine is down the app keeps working for the library and settings and shows "engine offline" until it reconnects.
 
+The Modes screen is built from the engine's `list_modes` (`GET /api/modes`): media, the six effects, clock, text, idle and the test patterns, each with its settings sheet (speed slider, colour list, text with a character count, toggles). Changes apply live. While the engine is offline it shows the last list it got.
+
+### Game hook
+
+`POST /api/event` with `{"event": "kill"}` (also `killstreak`, `death`, `win`) plays a 1.5 to 3s overlay on top of whatever the wall shows. Use an API token from Settings (`Authorization: Bearer lp_...`). Unknown events get a 400; more than 10 events in 5 seconds from one token get a 429. From a PC, `tools/game_hook.py` sends them (Python 3.8+, no packages):
+
+```sh
+export LEDPOSTER_URL=http://ledposter.local LEDPOSTER_TOKEN=lp_...
+python3 tools/game_hook.py kill
+your-detector | python3 tools/game_hook.py --stdin    # one event name per line
+```
+
+How a game's kills and deaths are detected is up to you (out of scope for v1): call `game_hook.send("kill")` from your own script, or print event names into `--stdin`.
+
 Dev without a Pi: `python tests/fake_engine.py /tmp/lpsock` serves the two sockets with a moving test image; point `engine.socket`/`engine.preview_socket` at them. Or build the real engine with `cd engine && make sim`.
 
 ## Testing milestone 4 on the Pi
@@ -289,7 +304,7 @@ cd engine && make test && make && make sim
 cd ../web && .venv/bin/python -m pytest -q
 ```
 
-Expected: `all engine tests passed`, and pytest passes everything (the engine socket tests now also cover `list_modes`, every new mode, overlays, `show_text` and the simulated button).
+Expected: `all engine tests passed`, and pytest reports `63 passed` (the engine socket tests now also cover `list_modes`, every new mode, overlays, `show_text` and the simulated button; the web tests cover the mode picker, `/api/event` and `tools/game_hook.py`, one of them against `build/ledengine-sim`).
 
 Add the new `button:` section to the data dir config (copy it from `config/single-panel.yaml`, or copy the whole file again and redo your edits), then start the engine on the one wired panel:
 
@@ -321,6 +336,13 @@ Things to check and report:
 6. **Overlays**: on top of any mode, `ctl '{"cmd":"overlay","event":"kill"}'` (also `killstreak`, `death`, `win`): a 1.5 to 3s animation, then the mode shows as before. `ctl '{"cmd":"show_text","text":"192.168.1.50","seconds":10}'` shows the text in a band for 10s. With `set_mode` pattern `solid` `ffffff` and `ceiling_amps: 3.0` as in milestone 3, an overlay never pushes `amps` over 3.
 7. **Button**: short presses step through `button.cycle` (plasma, fire, spider-sense, web-shot, radar, starfield, clock; the `demo` playlist goes item by item; then idle). Hold 2 to 10s and let go: the display goes off; again: back on. Hold 10s: "Wi-Fi setup" appears while you are still holding, and `ctl '{"cmd":"status"}' | jq -c '[.wifi_setup_requested, .wifi_setup_count]'` shows `[true,1]`. The log prints `button: short press` etc. for each. Report any missed or double presses.
 8. **List**: `ctl '{"cmd":"list_modes"}' | jq '.modes[].mode'` lists all modes; `jq '.modes[] | select(.effect=="plasma")'` shows the plasma settings schema.
+
+9. **Web app** (engine still running; start the web app as in milestone 4, `--port 8080`): the Modes tab shows Media, Effects, Clock and text, Test patterns. Tap Fire: the panel switches and the card turns amber. Its "..." sheet: drag Speed, change or add a colour, Flame height; each change shows on the panel within about a second. Text scroller: type a message and press Enter. After the update, an installed home-screen app may need one reopen to load the new screens.
+10. **Game hook**: create an API token in Settings, then from a PC on the same network:
+    ```sh
+    python3 tools/game_hook.py --url http://<pi-ip>:8080 --token lp_... kill
+    ```
+    prints `kill: ok, 1.5s on the wall` and the panel shows the hit marker and "KILL". `... dance` is refused by the script; `curl -s -X POST -H "Authorization: Bearer lp_..." -H 'Content-Type: application/json' -d '{"event":"dance"}' http://<pi-ip>:8080/api/event` answers 400. Sending 12 events in a row: the last two answer `429: Too many events, slow down (rate limited)`.
 
 With all six panels, use `config.example.yaml`; the effects fill the 128x192 canvas.
 

@@ -2,7 +2,7 @@
 import os
 import subprocess
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 try:  # a checkout: show the exact tag/commit in Settings
     _root = os.path.join(os.path.dirname(__file__), "..", "..")
     _desc = subprocess.run(["git", "-C", _root, "describe", "--tags", "--always", "--dirty"],

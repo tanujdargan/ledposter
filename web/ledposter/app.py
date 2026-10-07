@@ -27,6 +27,14 @@ STATIC = os.path.join(os.path.dirname(__file__), "..", "static")
 TIME_RE = r"^([01]\d|2[0-3]):[0-5]\d$"
 PATTERNS = [("panel-id", "Panel ID"), ("solid", "Solid colour"), ("cycle", "Colour cycle"),
             ("rows", "Row sweep"), ("cols", "Column sweep")]
+EVENTS = ["kill", "killstreak", "death", "win"]  # game hook overlays (spec: Game hook)
+EVENT_LIMIT, EVENT_WINDOW_S = 10, 5  # per caller: plenty for a game, stops a runaway script
+# Friendlier labels for engine setting names (list_modes, docs/protocol.md); others are capitalised.
+SETTING_LABELS = {"hour24": "24-hour clock", "seconds": "Show seconds", "date": "Show date",
+                  "clock": "Show the time", "level": "Brightness", "count": "Ripples",
+                  "background": "Background", "color": "Colour", "colors": "Colours", "text": "Text",
+                  "scale": "Size", "density": "Density", "strands": "Strands", "rings": "Rings",
+                  "blips": "Blips", "height": "Flame height", "speed": "Speed", "font": "Font"}
 DESCRIPTION = """REST API for the LED wall. Every action in the web app goes through these endpoints.
 
 Authentication: a session cookie (`POST /api/auth/login`) or an API token created in
@@ -77,11 +85,14 @@ class ModeRequest(BaseModel):
 class ModeSetting(BaseModel):
     key: str
     label: str
-    type: Literal["select", "color", "media", "slider", "text", "toggle"]
+    type: Literal["select", "color", "colors", "media", "slider", "text", "toggle"] = Field(
+        description="colors: a list of '#rrggbb' with min..max entries; text: up to max characters")
     options: Optional[list[str]] = None
     default: Any = None
     min: Optional[float] = None
     max: Optional[float] = None
+    step: Optional[float] = None
+    help: Optional[str] = None
 
 
 class ModeDef(BaseModel):
@@ -90,6 +101,17 @@ class ModeDef(BaseModel):
     group: str
     apply: dict[str, Any] = Field(description="Base fields of the set_mode request")
     settings: list[ModeSetting] = []
+    help: Optional[str] = None
+
+
+class EventRequest(BaseModel):
+    event: str = Field(description="kill, killstreak, death or win", examples=["kill"])
+
+
+class EventResult(BaseModel):
+    ok: bool = True
+    event: str
+    ms: int = Field(description="How long the overlay shows")
 
 
 class CanvasSize(BaseModel):
@@ -253,6 +275,73 @@ class Ok(BaseModel):
     ok: bool = True
 
 
+# -- mode picker from the engine's list_modes ----------------------------------------
+
+def _label(name):
+    return SETTING_LABELS.get(name, name.replace("_", " ").capitalize())
+
+
+def _hex(c):
+    return f"#{c}" if isinstance(c, str) and not c.startswith("#") else c
+
+
+def setting_def(s):
+    """One engine setting schema (docs/protocol.md, list_modes) as a picker control."""
+    t, name = s["type"], s["name"]
+    out = {"key": name, "label": _label(name), "help": s.get("help") or None, "default": s.get("default")}
+    if t in ("number", "int"):
+        span = s["max"] - s["min"]
+        out.update(type="slider", min=s["min"], max=s["max"],
+                   step=1 if t == "int" else 0.05 if span <= 2 else 0.1)
+    elif t == "bool":
+        out.update(type="toggle")
+    elif t == "color":
+        out.update(type="color", default=_hex(s.get("default")))
+    elif t == "colors":
+        out.update(type="colors", min=s["min"], max=s["max"], default=[_hex(c) for c in s.get("default") or []])
+    elif t == "string":
+        out.update(type="text", max=s.get("max"))
+    elif t == "choice":
+        out.update(type="select", options=list(s.get("choices") or []))
+    else:
+        return None  # a type this app doesn't know yet: leave it at the engine's default
+    return ModeSetting(**out)
+
+
+def mode_defs(engine_modes, playlists):
+    """The picker's modes: from the engine's list_modes when known, else the M4 basics."""
+    media = [ModeDef(id="media", name="Media item", group="Media", apply={"mode": "media"},
+                     settings=[ModeSetting(key="media", label="Item", type="media")]),
+             ModeDef(id="playlist", name="Playlist", group="Media", apply={"mode": "playlist"},
+                     settings=[ModeSetting(key="playlist", label="Playlist", type="select", options=playlists)])]
+    names = dict(PATTERNS)
+    patterns = [ModeDef(id=f"pattern:{p}", name=n, group="Test patterns", apply={"mode": "pattern", "pattern": p},
+                        settings=[ModeSetting(key="color", label="Colour", type="color", default="#ffffff")]
+                        if p == "solid" else []) for p, n in PATTERNS]
+    if not engine_modes:
+        return media + patterns
+    out, effects, other = list(media), [], []
+    for m in engine_modes:
+        kind = m.get("mode")
+        settings = [d for d in (setting_def(s) for s in m.get("settings", [])) if d]
+        if kind == "effect":
+            effects.append(ModeDef(id=f"effect:{m['effect']}", name=m.get("label") or m["effect"], group="Effects",
+                                   apply={"mode": "effect", "effect": m["effect"]}, settings=settings,
+                                   help=m.get("help")))
+        elif kind in ("clock", "text", "idle"):
+            other.append(ModeDef(id=kind, name=m.get("label") or kind, group="Clock and text", apply={"mode": kind},
+                                 settings=settings, help=m.get("help")))
+        elif kind == "pattern":
+            choices = next((s.get("choices") for s in m.get("settings", []) if s["name"] == "pattern"), None)
+            color = next((d for d in settings if d.key == "color"), None)
+            if choices:
+                patterns = [ModeDef(id=f"pattern:{p}", name=names.get(p, p), group="Test patterns",
+                                    apply={"mode": "pattern", "pattern": p},
+                                    settings=[color] if color and p in ("solid", "rows", "cols") else [])
+                            for p in choices]
+    return out + effects + other + patterns
+
+
 # -- app -----------------------------------------------------------------------------
 
 def create_app(data_dir=None):
@@ -269,6 +358,8 @@ def create_app(data_dir=None):
     st.engine = Engine(st.cfg["engine"]["socket"], st.cfg["engine"]["preview_socket"])
     st.library = Library(data_dir, lambda: config.canvas_size(st.cfg), lambda: float(st.cfg["display"]["gamma"]))
     st.save_task = None
+    st.engine_modes = None  # last list_modes reply; the picker falls back to it while the engine is offline
+    st.event_limiter = auth.RateLimiter(limit=EVENT_LIMIT, window=EVENT_WINDOW_S)
 
     def save():
         config.save(st.cfg, st.cfg_path)
@@ -502,17 +593,32 @@ def create_app(data_dir=None):
         return Ok()
 
     @app.get("/api/modes", response_model=list[ModeDef], tags=["control"],
-             summary="Modes the picker offers, with their per-mode settings")
-    def modes(who=Depends(require_auth)):
-        out = [ModeDef(id=f"pattern:{p}", name=n, group="Test patterns", apply={"mode": "pattern", "pattern": p},
-                       settings=[ModeSetting(key="color", label="Colour", type="color", default="#ffffff")]
-                       if p == "solid" else []) for p, n in PATTERNS]
-        out.append(ModeDef(id="media", name="Media item", group="Media", apply={"mode": "media"},
-                           settings=[ModeSetting(key="media", label="Item", type="media")]))
-        out.append(ModeDef(id="playlist", name="Playlist", group="Media", apply={"mode": "playlist"},
-                           settings=[ModeSetting(key="playlist", label="Playlist", type="select",
-                                                 options=sorted(st.cfg["playlists"]))]))
-        return out  # M5: append effects, clock and text here with slider/color/text settings
+             summary="Modes the picker offers, with their per-mode settings",
+             description="Built from the engine's `list_modes` (docs/protocol.md): media, effects, clock, "
+                         "text, idle and test patterns, each with its settings schema. While the engine is "
+                         "offline the last answer is used; before any answer, only media and test patterns.")
+    async def modes(who=Depends(require_auth)):
+        try:
+            r = await st.engine.call("list_modes")
+            st.engine_modes = r["modes"]
+        except EngineError as e:  # offline, or an engine without list_modes
+            log.info("list_modes: %s", e)
+        return mode_defs(st.engine_modes, sorted(st.cfg["playlists"]))
+
+    @app.post("/api/event", response_model=EventResult, tags=["control"],
+              summary="Game hook: play an overlay animation on top of the current mode",
+              description="Named events (`kill`, `killstreak`, `death`, `win`) play a 1.5-3s overlay; "
+                          "the current mode keeps running underneath. Meant for an API token "
+                          "(`Authorization: Bearer lp_...`, see tools/game_hook.py). Unknown events are a "
+                          f"400. At most {EVENT_LIMIT} events per {EVENT_WINDOW_S}s per caller, then 429.")
+    async def event(body: EventRequest, who=Depends(require_auth)):
+        if body.event not in EVENTS:
+            raise HTTPException(400, f"Unknown event '{body.event}'; use one of {', '.join(EVENTS)}")
+        if st.event_limiter.blocked(who):
+            raise HTTPException(429, "Too many events, slow down", headers={"Retry-After": str(EVENT_WINDOW_S)})
+        st.event_limiter.fail(who)  # counts this event in the window
+        r = await engine_call("overlay", event=body.event)
+        return EventResult(event=body.event, ms=int(r.get("ms") or 0))
 
     @app.post("/api/mode", response_model=Ok, tags=["control"])
     async def set_mode(body: ModeRequest, who=Depends(require_auth)):

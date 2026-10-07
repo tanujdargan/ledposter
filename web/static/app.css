@@ -133,9 +133,10 @@ input[type=time].input, input[type=number].input { font-variant-numeric: tabular
 .preview-card .offline-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 14px; pointer-events: none; }
 
 /* ---- modes ---- */
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--gap); }
 .mode-card { position: relative; width: 100%; aspect-ratio: 3 / 2; border-radius: var(--r-card); background: var(--card); border: 1px solid transparent; padding: 12px; text-align: left; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; }
 .mode-card .name { font-weight: 600; } .mode-card .sub { font-size: 12px; color: var(--muted); }
+.mode-card .name, .mode-card .sub { padding-right: 44px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .mode-card.active { background: #2a1c06; border-color: #5a3d0c; }
 .mode-card .play { position: absolute; right: 10px; bottom: 10px; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: flex; align-items: center; justify-content: center; }
 .mode-card .play svg { width: 18px; height: 18px; }
@@ -147,6 +148,10 @@ input[type=time].input, input[type=number].input { font-variant-numeric: tabular
 .swatch { width: 44px; height: 44px; border-radius: 50%; border: 2px solid transparent; }
 .swatch.active { border-color: #fff; }
 .color-input { width: 44px; height: 44px; padding: 0; border: 0; background: none; border-radius: 50%; overflow: hidden; }
+.color-chip { position: relative; display: inline-flex; }
+.color-chip .chip-x { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--card2); color: var(--muted); font-size: 14px; line-height: 1; padding: 0; display: flex; align-items: center; justify-content: center; }
+.swatch.add { background: var(--card2); border: 1px dashed var(--line); color: var(--muted); font-size: 22px; display: flex; align-items: center; justify-content: center; }
 
 /* ---- library ---- */
 .media-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; border-radius: 12px; overflow: hidden; }

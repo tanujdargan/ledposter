@@ -32,7 +32,8 @@ def test_playlist_crud(authed, engine, gif, data):
     assert authed.put("/api/playlists/bad/name", json=body).status_code == 404
     assert authed.put("/api/playlists/%2E%2E", json=body).status_code == 422
 
-    assert "evening" in authed.get("/api/modes").json()[-1]["settings"][0]["options"]
+    pl = next(m for m in authed.get("/api/modes").json() if m["id"] == "playlist")
+    assert "evening" in pl["settings"][0]["options"]
     assert authed.post("/api/mode", json={"mode": "playlist", "playlist": "evening"}).status_code == 200
     assert engine.state["mode_name"] == "evening"
     assert authed.post("/api/mode", json={"mode": "playlist", "playlist": "nope"}).status_code == 404

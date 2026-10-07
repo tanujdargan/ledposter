@@ -146,6 +146,9 @@ function modeLabel(st) {  // st: engine status with mode (kind) and mode_name
   if (kind === "media") return (mediaById(name) || {}).name || "Media";
   if (kind === "playlist") return `Playlist · ${name}`;
   if (kind === "pattern") return (modes.find((x) => x.id === `pattern:${name}`) || {}).name || name;
+  if (kind === "effect") return (modes.find((x) => x.id === `effect:${name}`) || {}).name || name;
+  const m = modes.find((x) => x.id === kind);
+  if (m) return m.name;
   return name ? `${kind} · ${name}` : kind;
 }
 let briDragging = false;
@@ -190,7 +193,8 @@ views.home = () => { views.current = "home"; };
 const modeValues = JSON.parse(localStorage.getItem("modeValues") || "{}");
 function isActive(m) {
   const e = (status && status.engine) || {};
-  return e.mode === m.apply.mode && (!m.apply.pattern || e.mode_name === m.apply.pattern);
+  return e.mode === m.apply.mode && (!m.apply.pattern || e.mode_name === m.apply.pattern) &&
+    (!m.apply.effect || e.mode_name === m.apply.effect);
 }
 async function applyMode(m, values = modeValues[m.id] || {}) {
   const body = { ...m.apply };
@@ -219,13 +223,28 @@ function modeSub(m) {
   if (m.apply.mode === "media") return v.media ? (mediaById(v.media) || {}).name || "Pick an item" : "Pick an item";
   if (m.apply.mode === "playlist") return v.playlist || "Pick a playlist";
   if (m.apply.pattern === "solid") return v.color || "#ffffff";
+  if (m.apply.mode === "effect") { const sp = v.speed ?? (m.settings.find((s) => s.key === "speed") || {}).default ?? 1; return `Speed ${fmtNum(sp)}×`; }
+  if (m.apply.mode === "text") return v.text ?? (m.settings.find((s) => s.key === "text") || {}).default ?? "";
+  if (m.apply.mode === "clock") return (v.hour24 ?? true) ? "24-hour" : "12-hour";
+  if (m.apply.mode === "idle") return "Dim, slow, with the time";
   return "Test pattern";
+}
+const fmtNum = (x) => (Math.round(+x * 100) / 100).toString();
+function settingColors(m, v) {  // the colours a card's thumbnail is painted with
+  const s = m.settings.find((x) => x.type === "colors");
+  return s ? (v[s.key] || s.default || []) : [];
 }
 function modeArt(m) {
   const v = modeValues[m.id] || {};
   if (m.apply.mode === "media" && v.media && (mediaById(v.media) || {}).status === "ready") return h("img", { src: `/api/media/${v.media}/thumb.png`, alt: "" });
   const c = h("canvas", { width: 8, height: 12 }), x = c.getContext("2d");
   const colors = { "panel-id": ["#1b1b22", "#FFB020"], solid: ["#000", v.color || "#fff"], cycle: ["#f33", "#3f3"], rows: ["#000", "#8cf"], cols: ["#000", "#fc8"], media: ["#222", "#444"], playlist: ["#222", "#1DB954"] };
+  if (m.apply.mode === "effect") {  // the effect's colours as stripes
+    const cs = settingColors(m, v);
+    cs.forEach((col, i) => { x.fillStyle = col; x.fillRect(0, Math.floor(i * 12 / cs.length), 8, Math.ceil(12 / cs.length)); });
+    return c;
+  }
+  Object.assign(colors, { clock: ["#000", v.color || "#fff"], text: ["#000", v.color || "#fff"], idle: ["#050818", "#2a3a90"] });
   const [a, b] = colors[m.apply.pattern || m.apply.mode] || ["#222", "#555"];
   x.fillStyle = a; x.fillRect(0, 0, 8, 12); x.fillStyle = b;
   if (m.apply.pattern === "rows") x.fillRect(0, 5, 8, 1); else if (m.apply.pattern === "cols") x.fillRect(3, 0, 1, 12);
@@ -238,19 +257,34 @@ function modeSheet(m) {
   const prev = h("canvas", { "aria-label": "Live preview" });
   const content = [h("h3", {}, m.name),
     h("div", { class: "preview-card sheet-preview" }, h("div", { class: "preview-wrap" }, prev))];
+  if (m.help) content.push(h("p", { class: "note" }, m.help));
   for (const s of m.settings) {
     content.push(h("div", { class: "section-title" }, s.label));
+    if (s.help && s.type !== "toggle") content.push(h("p", { class: "help" }, s.help));
     if (s.type === "select") content.push(h("div", { class: "chips" }, s.options.length ? s.options.map((o) => h("button", { class: `chip${values[s.key] === o ? " active" : ""}`, onclick: () => { set(s.key, o); closeSheet(); } }, o)) : h("span", { class: "muted" }, "Nothing to choose yet")));
     else if (s.type === "media") content.push(mediaPicker((id) => { set(s.key, id); closeSheet(); }, values[s.key]));
     else if (s.type === "color") {
       const presets = ["#ffffff", "#ffb020", "#ff4d4f", "#1db954", "#4da3ff", "#b05cff", "#ff66c4", "#00e5ff"];
       const input = h("input", { class: "color-input", type: "color", value: values[s.key] || s.default || "#ffffff", "aria-label": "Custom colour", onchange: (e) => set(s.key, e.target.value) });
       content.push(h("div", { class: "swatches" }, presets.map((c) => h("button", { class: `swatch${(values[s.key] || s.default) === c ? " active" : ""}`, style: `background:${c}`, "aria-label": c, onclick: () => { set(s.key, c); modeSheet(m); } })), input));
-    } else if (s.type === "slider") {
-      const val = h("span", { class: "num" }, values[s.key] ?? s.default);
-      const r = h("input", { type: "range", min: s.min ?? 0, max: s.max ?? 100, value: values[s.key] ?? s.default ?? 50, "aria-label": s.label, oninput: throttle((e) => { val.textContent = e.target.value; set(s.key, +e.target.value); }, 150) });
-      content.push(h("label", { class: "slider" }, h("span", { class: "top" }, h("b", {}, s.label), val), r));
-    } else if (s.type === "text") content.push(h("input", { class: "input", value: values[s.key] ?? s.default ?? "", "aria-label": s.label, onchange: (e) => set(s.key, e.target.value) }));
+    } else if (s.type === "colors") content.push(colorsEditor(s, values[s.key] || s.default || [], (list) => set(s.key, list)));
+    else if (s.type === "slider") {
+      const unit = s.key === "speed" ? "×" : "";
+      const val = h("span", { class: "num" }, `${fmtNum(values[s.key] ?? s.default)}${unit}`);
+      const r = h("input", { type: "range", min: s.min ?? 0, max: s.max ?? 100, step: s.step ?? 1, value: values[s.key] ?? s.default ?? 50, "aria-label": s.label });
+      const paint = () => r.style.setProperty("--p", `${(r.value - r.min) / (r.max - r.min) * 100}%`);
+      const send = throttle((v) => set(s.key, v), 150);
+      r.oninput = (e) => { val.textContent = `${fmtNum(e.target.value)}${unit}`; paint(); send(+e.target.value); };
+      paint();
+      const ends = s.key === "speed" ? h("span", { class: "top muted", style: "font-size:12px" }, h("span", {}, "Slow"), h("span", {}, "Fast")) : null;
+      content.push(h("label", { class: "slider" }, h("span", { class: "top" }, h("b", {}, s.label), val), r, ends));
+    } else if (s.type === "text") {
+      const count = h("span", { class: "note num" });
+      const input = h("input", { class: "input", value: values[s.key] ?? s.default ?? "", maxlength: s.max ?? 500, "aria-label": s.label });
+      const upd = () => { count.textContent = s.max ? `${new TextEncoder().encode(input.value).length} / ${s.max}` : ""; };
+      input.oninput = upd; input.onchange = (e) => set(s.key, e.target.value); upd();
+      content.push(input, count);
+    }
     else if (s.type === "toggle") content.push(h("div", { class: "row", style: "padding:0" }, h("div", { class: "grow" }, s.label), switchEl(!!(values[s.key] ?? s.default), (v) => set(s.key, v), s.label)));
   }
   content.push(h("div", { class: "actions" }, h("button", { class: "btn ghost", onclick: () => { delete modeValues[m.id]; localStorage.setItem("modeValues", JSON.stringify(modeValues)); closeSheet(); if (isActive(m)) applyMode(m, {}); renderModes(); } }, "Reset to defaults"),
@@ -260,6 +294,19 @@ function modeSheet(m) {
   if (lastFrame && lastFrameStatus) { sheetRenderer.setSize(lastFrameStatus.w, lastFrameStatus.h); sheetRenderer.draw(lastFrame); }
 }
 const gamma = () => (settings && settings.display && settings.display.gamma) || 2.2;
+// A list of colours (effects): one swatch per colour, tap to change, x to remove, + to add.
+function colorsEditor(s, list, onchange) {
+  const cur = [...list];
+  const wrap = h("div", { class: "swatches" });
+  const draw = () => {
+    wrap.replaceChildren(...cur.map((c, i) => h("span", { class: "color-chip" },
+      h("input", { class: "color-input", type: "color", value: c, "aria-label": `Colour ${i + 1}`, onchange: (e) => { cur[i] = e.target.value; onchange([...cur]); } }),
+      cur.length > (s.min ?? 1) ? h("button", { class: "chip-x", "aria-label": `Remove colour ${i + 1}`, onclick: () => { cur.splice(i, 1); draw(); onchange([...cur]); } }, "×") : null)),
+      cur.length < (s.max ?? 6) ? h("button", { class: "swatch add", "aria-label": "Add a colour", onclick: () => { cur.push(cur[cur.length - 1] || "#ffffff"); draw(); onchange([...cur]); } }, "+") : null);
+  };
+  draw();
+  return wrap;
+}
 function mediaPicker(onpick, selected) {
   const ready = media.filter((m) => m.status === "ready");
   if (!ready.length) return h("p", { class: "muted" }, "No transcoded media yet. Upload something in the Library.");
