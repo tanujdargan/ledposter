@@ -1,7 +1,10 @@
-// Pure wall geometry and power math: no hardware dependency, so it is unit
-// tested on any machine (see tests/test_engine.cpp).
+// Pure wall geometry, power math and the mode interface: no hardware
+// dependency, so it is unit tested on any machine (see tests/test_engine.cpp).
 #pragma once
+#include <array>
+#include <cmath>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -70,8 +73,10 @@ struct Layout {
   }
 };
 
-// Estimated panel current in amps, linear in the RGB sum. The library's CIE
-// luminance correction makes real current lower than linear, so this errs safe.
+// Estimated panel current in amps, linear in the RGB sum. The engine turns off
+// the library's luminance correction and applies gamma itself (media at
+// transcode time, everything else via gamma_lut), so pixel values are linear
+// PWM duty and this tracks real current rather than overestimating it.
 // amps_full_white_per_panel is the calibration knob (~6A = 30W at 5V).
 inline double estimate_amps(const Frame &f, int panel_size, double amps_full_white_per_panel,
                             int brightness_pct) {
@@ -85,3 +90,20 @@ inline double estimate_amps(const Frame &f, int panel_size, double amps_full_whi
 inline double limiter_scale(double amps, double ceiling_amps) {
   return amps > ceiling_amps ? ceiling_amps / amps : 1.0;
 }
+
+// display.gamma as a LUT, for output the engine generates (patterns, effects,
+// text). Cached media is gamma corrected at transcode time and skips it.
+inline std::array<uint8_t, 256> gamma_lut(double gamma) {
+  std::array<uint8_t, 256> lut;
+  for (int i = 0; i < 256; i++) lut[i] = std::lround(std::pow(i / 255.0, gamma) * 255);
+  return lut;
+}
+
+// A mode draws the whole canvas for t_ms (time since the mode started) and
+// returns the t_ms at which it next needs to draw. gamma: output still needs
+// the engine's gamma LUT (false for pre-corrected media).
+struct Mode {
+  std::string name;
+  bool gamma = true;
+  std::function<int64_t(Frame &, int64_t t_ms)> render;
+};

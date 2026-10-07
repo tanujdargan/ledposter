@@ -70,3 +70,10 @@ inline bool draw_pattern(const std::string &name, Frame &f, const Layout &L, lon
   }
   return true;
 }
+
+inline Mode pattern_mode(const std::string &name, const Layout &L, uint32_t color) {
+  return {name, true, [name, &L, color](Frame &f, int64_t t) -> int64_t {
+            draw_pattern(name, f, L, t / 33, color);
+            return (t / 33 + 1) * 33;
+          }};
+}

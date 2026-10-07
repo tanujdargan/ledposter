@@ -17,3 +17,18 @@ matrix:
 power:
   ceiling_amps: 13.0               # frames are scaled down to never exceed this
   amps_full_white_per_panel: 6.0   # calibration: measure one panel at full white and set this
+
+display:
+  gamma: 2.2   # engine LUT for patterns (later effects/text); the transcoder bakes the same curve into media
+
+# Named playlists for `ledengine --playlist NAME`. media is a media id: a folder
+# in $LEDPOSTER_DATA/media made by `python -m ledposter.transcode --w 64 --h 64`
+# (this canvas is 64x64; the engine refuses media made for another size).
+# duration_s is optional: default is one full play of the item, 10s for stills.
+playlists:
+  demo:
+    loop: true      # false: stop on the last frame of the last item
+    shuffle: false  # true: new random order every pass
+    items:
+      - {media: example-gif}
+      - {media: example-photo, duration_s: 15}
