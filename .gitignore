@@ -1,3 +1,6 @@
 engine/ledengine
 engine/build/
 .DS_Store
+web/.venv/
+__pycache__/
+.pytest_cache/
