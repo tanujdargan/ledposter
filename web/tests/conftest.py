@@ -11,6 +11,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from fake_engine import FakeEngine  # noqa: E402
+from fake_net import FakeNet  # noqa: E402
 from ledposter.app import create_app
 
 PASSWORD = "correct horse battery"
@@ -42,8 +43,15 @@ def data(tmp_path, sockdir):
 
 
 @pytest.fixture
-def client(data, engine):
-    with TestClient(create_app(str(data))) as c:
+def fakenet():
+    """Fake NetworkManager; the app never runs nmcli & co on the test machine."""
+    return FakeNet()
+
+
+@pytest.fixture
+def client(data, engine, fakenet):
+    with TestClient(create_app(str(data), net_runner=fakenet.run)) as c:
+        c.fakenet = fakenet
         yield c
 
 

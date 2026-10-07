@@ -1,0 +1,21 @@
+// Lets the `ledposter` service user (M8 runs the web app as it) do the networking the app
+// needs without root or sudo. Installed by M8 as /etc/polkit-1/rules.d/49-ledposter-network.rules.
+//
+// - NetworkManager: scan, connect, add/modify profiles, raise the shared-mode hotspot.
+// - hostnamed: set the hostname from Settings.
+// - systemd: only start/stop/restart two fixed units whose content root controls:
+//   ledposter-net-rollback.timer (revert a static IP to DHCP after 2 minutes) and
+//   ledposter-hosts.service (rewrite the 127.0.1.1 line in /etc/hosts after a hostname change).
+//   The app cannot define transient units or touch anything else, so this is not a root path.
+polkit.addRule(function (action, subject) {
+  if (subject.user != "ledposter") return polkit.Result.NOT_HANDLED;
+  if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0) return polkit.Result.YES;
+  if (action.id == "org.freedesktop.hostname1.set-static-hostname" ||
+      action.id == "org.freedesktop.hostname1.set-hostname") return polkit.Result.YES;
+  if (action.id == "org.freedesktop.systemd1.manage-units") {
+    var unit = action.lookup("unit"), verb = action.lookup("verb");
+    if ((unit == "ledposter-net-rollback.timer" || unit == "ledposter-hosts.service") &&
+        (verb == "start" || verb == "stop" || verb == "restart")) return polkit.Result.YES;
+  }
+  return polkit.Result.NOT_HANDLED;
+});

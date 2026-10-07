@@ -1,11 +1,23 @@
-"""python -m ledposter [--port N] [--host H]: serve the web app. Port defaults to config web.port."""
+"""python -m ledposter [--port N] [--host H]: serve the web app. Port defaults to config web.port.
+
+LEDPOSTER_FAKE_NET=1 (or `offline`) swaps nmcli & co for tests/fake_net.py, so the networking
+screens can be developed on a laptop without touching its Wi-Fi.
+"""
 import argparse
 import logging
+import os
+import sys
 
 import uvicorn
 
 from . import config
 from .app import create_app
+
+
+def fake_net_runner(value):
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
+    from fake_net import fake_runner_from_env
+    return fake_runner_from_env(value)
 
 
 def main():
@@ -15,7 +27,9 @@ def main():
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     port = a.port or int(config.load()["web"]["port"])
-    uvicorn.run(create_app(), host=a.host, port=port, log_level="info", ws_max_size=1 << 20)
+    fake = os.environ.get("LEDPOSTER_FAKE_NET")
+    runner = fake_net_runner(fake) if fake else None
+    uvicorn.run(create_app(net_runner=runner), host=a.host, port=port, log_level="info", ws_max_size=1 << 20)
 
 
 if __name__ == "__main__":

@@ -9,11 +9,13 @@ web/      Python package `ledposter`: FastAPI web app + REST API, transcoder, en
 web/static  the PWA (vanilla JS, no build step)
 config/   example YAML configs (all hardware tunables live here)
 tools/    game_hook.py: sends game events to the wall from a PC (stdlib only)
+system/   files M8 installs on the Pi: avahi service, captive-portal dnsmasq config, polkit rules,
+          systemd units and the root-side helper script for networking (see "System files")
 vendor/   hzeller/rpi-rgb-led-matrix (git submodule, pinned)
 docs/     spec, architecture contracts, engine socket protocol (protocol.md), UI references, deviations
 ```
 
-Status: **milestone 5**, effects, clock, text, overlays, the button and the game hook. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 added the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`. Milestone 5 adds the engine-drawn modes: six generative effects (spider-sense ripple, web-shot trace, UAV radar sweep, plasma, fire, starfield), a clock, an idle screen and a text scroller, each with settings (speed, colors, ...) that the engine describes (`list_modes`) and the web app's mode picker is built from; overlays on top of any mode (game hook events `kill`, `killstreak`, `death`, `win` via `POST /api/event` and `tools/game_hook.py`, and `show_text` messages); and the push button (short press: next mode or playlist item, 2s: display on/off, 10s: Wi-Fi setup request).
+Status: **milestone 6**, networking. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 added the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`. Milestone 5 added the engine-drawn modes: six generative effects (spider-sense ripple, web-shot trace, UAV radar sweep, plasma, fire, starfield), a clock, an idle screen and a text scroller, each with settings the engine describes (`list_modes`) and the web app's mode picker is built from; overlays on top of any mode (game hook events `kill`, `killstreak`, `death`, `win` via `POST /api/event` and `tools/game_hook.py`, and `show_text` messages); and the push button (short press: next mode or playlist item, 2s: display on/off, 10s: Wi-Fi setup request). Milestone 6 adds networking: `ledposter.local` over Avahi, stable DHCP, an optional static IP with automatic rollback, hostname from Settings, the IP on the wall at boot, and the `LEDWall-Setup` hotspot with a captive portal for first-time Wi-Fi setup.
 
 ## Wiring assumptions
 
@@ -266,7 +268,33 @@ your-detector | python3 tools/game_hook.py --stdin    # one event name per line
 
 How a game's kills and deaths are detected is up to you (out of scope for v1): call `game_hook.send("kill")` from your own script, or print event names into `--stdin`.
 
-Dev without a Pi: `python tests/fake_engine.py /tmp/lpsock` serves the two sockets with a moving test image; point `engine.socket`/`engine.preview_socket` at them. Or build the real engine with `cd engine && make sim`.
+Dev without a Pi: `python tests/fake_engine.py /tmp/lpsock` serves the two sockets with a moving test image; point `engine.socket`/`engine.preview_socket` at them. Or build the real engine with `cd engine && make sim`. `LEDPOSTER_FAKE_NET=1` (or `offline`) swaps NetworkManager for `tests/fake_net.py`, so the Wi-Fi setup and static IP screens can be exercised on a laptop without touching its network; `offline` boots "without a known network" and raises the (fake) hotspot after `network.setup_timeout_s`.
+
+### Networking (milestone 6)
+
+Everything that touches the OS goes through `web/ledposter/net.py`, which shells out to `nmcli`, `hostnamectl`, `systemctl` and `ping` (NetworkManager is Bookworm's default; dhcpcd is not used). The wall is reached by name:
+
+- **`ledposter.local`**: Avahi advertises the hostname and an `_http._tcp` service (`system/avahi/ledposter.service`). Settings > Hostname changes it (one RFC 1123 label); `hostnamectl` sets it and `ledposter-hosts.service` rewrites `/etc/hosts` as root; Avahi follows.
+- **DHCP by default**, with `ipv4.dhcp-client-id mac` and `ipv4.dhcp-send-hostname yes` set on every Wi-Fi profile the app creates or joins, so routers hand back the same lease. Settings explains how to add a DHCP reservation and shows the MAC.
+- **Static IP** (Settings > IP address): validated against the current subnet (inside the network, not the network/broadcast address, gateway in the subnet, address not already answering a ping). Before it is applied the app writes `$LEDPOSTER_DATA/net-rollback` and restarts `ledposter-net-rollback.timer` (120s); then it applies the address 1.5s after answering, and the browser is sent to `http://<new ip>/#/settings/confirm`. Signing in there and tapping "Keep this address" (`POST /api/network/static/confirm`) stops the timer. Otherwise `ledposter-net rollback` runs as root and puts the connection back on DHCP, whether or not the web app is alive.
+- **IP on the wall**: hostname and IP for `network.show_ip_s` seconds when the web app starts and the engine and network are up, and from Settings > "Show address on the wall" (`POST /api/network/show_ip`). A double button press is the planned trigger (docs/DEVIATIONS.md).
+- **First-time setup**: no Wi-Fi or Ethernet within `network.setup_timeout_s` of the web app starting, or the engine reporting a 10s button hold (`wifi_setup_requested`), or Settings > "Start Wi-Fi setup hotspot": the app scans (one radio, so before the AP is up), then raises the WPA2 hotspot `LEDWall-Setup` with the password in `$LEDPOSTER_DATA/setup-password` (created at install and printed on the card; created on first start if missing, with a log line saying where). NM shared mode runs dnsmasq; `system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf` resolves every name to `10.42.0.1`, and the app answers the OS connectivity probes (`/hotspot-detect.html`, `/generate_204`, `/connecttest.txt`, `/ncsi.txt`, ...) with a redirect to `/setup`, so the phone opens the portal by itself. The wizard: admin password first on a fresh wall, then the network list (signal and lock icons; Refresh drops the hotspot for ~15s), the network's password, and a 4-step progress screen. Joining switches the hotspot off; on failure it comes back with the reason. The wall shows each step as text: hotspot up, joining, joined with IP, or failed with the reason.
+- **Auth**: the setup endpoints are open without login only while the hotspot is up on a wall that has no admin password yet. Everything else always needs the session or a token. Threat model in docs/DEVIATIONS.md.
+
+All of it is in the API under `network` at `/docs`: `GET /api/network`, `PUT /api/network/hostname`, `POST /api/network/static`, `/static/confirm`, `/dhcp`, `/show_ip`, `GET /api/network/setup`, `/setup/start`, `/setup/stop`, `GET /api/network/wifi`, `/wifi/scan`, `/wifi/join`.
+
+### System files (installed by milestone 8)
+
+| file | goes to | why |
+|---|---|---|
+| `system/avahi/ledposter.service` | `/etc/avahi/services/` | `_http._tcp` service next to `<hostname>.local` |
+| `system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf` | `/etc/NetworkManager/dnsmasq-shared.d/` | captive DNS while the hotspot is up (only then: NM starts this dnsmasq for shared connections) |
+| `system/polkit/49-ledposter-network.rules` | `/etc/polkit-1/rules.d/` | lets the `ledposter` service user drive NetworkManager, set the hostname, and start/stop the two units below. No sudoers needed |
+| `system/systemd/ledposter-net-rollback.timer` + `.service` | `/etc/systemd/system/` | 120s revert-to-DHCP timer, armed by the app before a static IP; the service runs the script as root |
+| `system/systemd/ledposter-hosts.service` | `/etc/systemd/system/` | rewrites `127.0.1.1` in `/etc/hosts` after a hostname change |
+| `system/bin/ledposter-net` | `/usr/local/bin/` | the root-side script those two services run (`rollback`, `hosts`); `bash -n` clean |
+
+Until M8, run the web app as root with those files installed by hand (see the M6 test section). The `ledposter` user does not exist yet.
 
 ## Testing milestone 4 on the Pi
 
@@ -353,6 +381,59 @@ Things to check and report:
     prints `kill: ok, 1.5s on the wall` and the panel shows the hit marker and "KILL". `... dance` is refused by the script; `curl -s -X POST -H "Authorization: Bearer lp_..." -H 'Content-Type: application/json' -d '{"event":"dance"}' http://<pi-ip>:8080/api/event` answers 400. Sending 12 events in a row: the last two answer `429: Too many events, slow down (rate limited)`.
 
 With all six panels, use `config.example.yaml`; the effects fill the 128x192 canvas.
+## Testing milestone 6 on the Pi
+
+Pull and run the tests:
+
+```sh
+cd ~/ledposter && git pull && git submodule update
+cd web && .venv/bin/pip install -r requirements.txt && .venv/bin/python -m pytest -q
+```
+
+Expected: `91 passed` (networking tests run against a fake NetworkManager; nothing on the Pi's network is touched by the tests. Needs `build/ledengine-sim` from `cd engine && make sim` for the engine socket tests, else they are skipped). Then install the M6 system files by hand (M8 scripts this) and check the tools are there:
+
+```sh
+sudo apt install -y avahi-daemon network-manager   # both already on Raspberry Pi OS Bookworm
+sudo install -m 755 system/bin/ledposter-net /usr/local/bin/
+sudo install -m 644 system/systemd/ledposter-*.service system/systemd/ledposter-*.timer /etc/systemd/system/
+sudo install -m 644 system/avahi/ledposter.service /etc/avahi/services/
+sudo install -D -m 644 system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf /etc/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf
+sudo install -m 644 system/polkit/49-ledposter-network.rules /etc/polkit-1/rules.d/
+sudo systemctl daemon-reload
+nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status      # wlan0:wifi:connected:<your network>
+```
+
+Create the card password once, then start the engine and the web app as root for now (root needs no polkit; the `ledposter` user comes with M8). Port 80 so `http://ledposter.local` works without a port:
+
+```sh
+export LEDPOSTER_DATA=~/lpdata
+echo 'yourcardpw' > $LEDPOSTER_DATA/setup-password && chmod 600 $LEDPOSTER_DATA/setup-password
+sudo -E ./engine/ledengine &
+cd web && sudo -E .venv/bin/python -m ledposter --port 80
+```
+
+Check and report:
+
+1. **Boot IP**: within a few seconds of the web app starting the wall shows `ledposter.local` and its IP for 10s. From your phone (same Wi-Fi) open `http://ledposter.local/`: the app loads. `avahi-browse -rt _http._tcp` on a laptop lists "LED Poster on ledposter".
+2. **Stable DHCP**: `nmcli -t -f ipv4.dhcp-client-id,ipv4.dhcp-send-hostname con show "<your network>"` shows `mac` and `yes` (set by the app when it joins a network; for a profile that existed before, set it once by hand: `sudo nmcli con modify "<your network>" ipv4.dhcp-client-id mac ipv4.dhcp-send-hostname yes`). Reboot twice: same address each time. Settings > Network shows SSID, signal, `DHCP · <ip>/24`, and the reservation help with the MAC.
+3. **Hostname**: Settings > Hostname > `wall-two`. `hostnamectl` shows it, `grep 127.0.1.1 /etc/hosts` shows it, and `http://wall-two.local/` works within ~10s (`avahi-resolve -n wall-two.local`). Change it back.
+4. **Static IP, confirmed**: Settings > IP address > Static, pick a free address in your subnet (the sheet refuses one that answers a ping, and anything outside the subnet). Apply: the page counts down 5s and opens `http://<new ip>/#/settings/confirm`; sign in; the amber banner counts down from 2:00; tap "Keep this address". `systemctl list-timers ledposter-net-rollback.timer` is now empty, `ls $LEDPOSTER_DATA/net-rollback` says no such file, `ip -4 addr show wlan0` shows the new address.
+5. **Static IP, rolled back**: do it again but close the browser instead of confirming. Within 2 minutes the wall is back on DHCP (`journalctl -u ledposter-net-rollback.service` says `static IP on '<network>' was not confirmed, back to DHCP`) and `http://ledposter.local/` works again. Report how long the gap was.
+6. **Hotspot from the app**: Settings > "Start Wi-Fi setup hotspot" (the 10s button hold does the same once the M5 engine reports it). The wall shows `Wi-Fi setup / Join LEDWall-Setup / password: on the card / then open http://10.42.0.1`. On the phone, join `LEDWall-Setup` with the card password: the phone's captive portal sheet opens on the network list (if it doesn't, open `http://10.42.0.1/`). Pick your network, enter a **wrong** password: the wall shows `Joining <ssid>...`, then `Wi-Fi failed / Wrong password / Setup hotspot is back`; the phone, back on the hotspot, shows the failure and Try again. Enter the right password: the wall shows `Joined <ssid> / <ip> / http://ledposter.local`; move the phone to your Wi-Fi and open that address. Time the whole thing from powering on to the app loading (acceptance target: under 3 minutes).
+7. **Boot without a network**: `sudo nmcli con modify "<your network>" connection.autoconnect no` and reboot. 60s after the web app starts (`network.setup_timeout_s`) the hotspot comes up on its own and the wall shows the setup text; join it and set up as in 6. Then `sudo nmcli con modify "<your network>" connection.autoconnect yes`.
+8. **First run on the hotspot**: `mv $LEDPOSTER_DATA/config.yaml{,.bak}` (or delete `web.admin_password` from it) and repeat 6: the portal asks for an admin password before the network list; `curl http://10.42.0.1/api/network` from the phone's browser answers 401 but `/api/network/setup` answers 200 until the password is set.
+
+If networking breaks (wrong static IP, hotspot stuck), from keyboard + HDMI or the serial console:
+
+```sh
+sudo nmcli con down LEDWall-Setup                       # drop the hotspot
+sudo nmcli con modify "<your network>" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns ""
+sudo nmcli con up "<your network>"                      # back on DHCP
+sudo systemctl stop ledposter-net-rollback.timer; sudo rm -f /data/net-rollback ~/lpdata/net-rollback
+nmcli device wifi list                                  # what the Pi can see (2.4GHz only on a 3B)
+```
+
+`sudo /usr/local/bin/ledposter-net rollback` does the DHCP revert from the note file by hand, and `journalctl -u NetworkManager -n 50` explains failed joins.
 
 ## Troubleshooting
 
@@ -378,3 +459,8 @@ With all six panels, use `config.example.yaml`; the effects fill the 128x192 can
 - **`fonts: N of 6 missing in ...`**: the vendor submodule isn't checked out (`git submodule update --init`) or `fonts.dir` is wrong. Without fonts, text and clock modes can't be set and overlays show no words.
 - **Clock shows the wrong time**: set the time zone (`sudo raspi-config nonint do_change_timezone ...`) and restart the engine; check `timedatectl` shows NTP synchronized.
 - **`socat: ... Permission denied` from a client**: the sockets are mode 660, owned by `engine.user`:`engine.group`. Run the client (and the web app) as root or as a user in `engine.group` (the systemd setup in milestone 8 gives the web app its group).
+- **The phone joins `LEDWall-Setup` but no portal page opens**: open `http://10.42.0.1/` by hand. Check `/etc/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf` is installed (NM only reads it when the hotspot connection starts) and that the web app runs on port 80.
+- **`nmcli dev wifi list` is empty while the hotspot is up**: expected, one radio. The portal uses the list scanned before the hotspot came up; Refresh drops the hotspot briefly to rescan.
+- **Join fails with "Wrong password" for a correct password**: 5GHz-only network (the Pi 3B is 2.4GHz only), or a WPA3-only network. Check `journalctl -u NetworkManager`.
+- **Static IP sheet says "Could not arm the DHCP rollback timer"**: the systemd units are not installed, or the user running the app may not start them (polkit rules). Nothing was changed; install `system/systemd/*` and `system/polkit/*`.
+- **Hostname changed but `ledposter.local` still answers**: Avahi caches on the clients for a bit; the old name stops within a minute. If `/etc/hosts` still has the old name, `ledposter-hosts.service` did not run: `sudo systemctl start ledposter-hosts.service`.

@@ -221,6 +221,19 @@
       <div class="row"><div class="grow"><span class="label">Software version</span></div><span class="value mono" id="set-version">–</span></div>
       <button class="row link" id="set-password"><div class="grow"><span class="label">Admin password</span><span class="sub">Change the sign-in password</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
     </div>
+    <!-- Network (M6): Hue bridge-settings rows; the Wi-Fi row opens the section-7 wizard at /setup -->
+    <div class="section-title">Network</div>
+    <div class="banner hidden" id="net-rollback"></div>
+    <div class="list" id="net-list"><div class="row"><div class="grow"><span class="sub">Loading…</span></div></div></div>
+    <details class="card" id="net-help"><summary>Want a fixed address? Reserve it in your router</summary>
+      <p class="help" style="margin:8px 0">A DHCP reservation keeps the wall's address the same on every boot without the risks of a static IP. In most routers:</p>
+      <ol>
+        <li>Open the router's admin page (often <span class="mono">192.168.0.1</span> or <span class="mono">192.168.1.1</span>, printed on the router).</li>
+        <li>Find <b>DHCP</b> settings: "Address reservation", "Static lease", "DHCP binding" or "Reserved IP".</li>
+        <li>Add an entry for the wall's MAC address <span class="mono" id="net-mac">–</span> with the address you want, inside the router's range.</li>
+        <li>Restart the wall, or wait for its lease to renew. <span class="mono">ledposter.local</span> keeps working either way.</li>
+      </ol>
+    </details>
     <div class="section-title">API tokens</div>
     <div class="list" id="token-list"></div>
     <p class="help">For Home Assistant, scripts and the game hook. Sent as <span class="mono">Authorization: Bearer</span>.</p>
@@ -263,6 +276,8 @@
     <div class="section-title">Maintenance</div>
     <div class="list">
       <button class="row link" id="panel-test"><div class="grow"><span class="label">Panel ID test</span><span class="sub">Shows 1 to 6 with an up-arrow on each panel to check the wiring</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
+      <button class="row link" id="show-ip"><div class="grow"><span class="label">Show address on the wall</span><span class="sub">Hostname and IP for 10 seconds, like at boot</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
+      <button class="row link" id="setup-hotspot"><div class="grow"><span class="label">Start Wi-Fi setup hotspot</span><span class="sub">Same as holding the button for 10s: the wall leaves this network and opens LEDWall-Setup</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
     </div>
   </section>
 </main>

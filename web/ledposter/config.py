@@ -31,6 +31,9 @@ DEFAULTS = {
         "enabled": False, "on": "07:00", "off": "23:00", "days": [0, 1, 2, 3, 4, 5, 6],
         "quiet": {"enabled": False, "start": "22:00", "end": "07:00", "max_brightness": 20},
     },
+    # Setup hotspot and on-wall IP display (M6). wifi_device "" = first Wi-Fi device.
+    "network": {"hotspot_ssid": "LEDWall-Setup", "hotspot_ip": "10.42.0.1", "setup_timeout_s": 60,
+                "show_ip_s": 10, "wifi_device": ""},
     "mqtt": {"enabled": False, "host": "", "port": 1883, "username": "", "password": ""},  # M7
     "ddp": {"enabled": False},  # M7
 }

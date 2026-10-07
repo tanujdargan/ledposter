@@ -1,0 +1,11 @@
+# Runs as root when ledposter-net-rollback.timer elapses. Reads $LEDPOSTER_DATA/net-rollback
+# (written by the web app before applying a static IP) and puts that connection back on DHCP.
+# A missing file means the address was confirmed: nothing happens.
+[Unit]
+Description=Put the LED wall back on DHCP (unconfirmed static IP)
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+Environment=LEDPOSTER_DATA=/data
+ExecStart=/usr/local/bin/ledposter-net rollback

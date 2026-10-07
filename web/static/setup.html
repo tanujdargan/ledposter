@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wi-Fi setup · LED Poster</title>
+<meta name="theme-color" content="#0E0E10">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<!-- Wi-Fi setup wizard (docs/ui-references.md section 7): MyDyson/Xbox network list with lock + signal,
+     Hatch password screen, MyDyson/Sonos joining stepper. Runs in captive mini-browsers: one column, no tab bar. -->
+<svg class="hidden" aria-hidden="true">
+  <symbol id="i-lock" viewBox="0 0 24 24"><path fill="currentColor" d="M7 10V8a5 5 0 0 1 10 0v2h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2zm2 0h6V8a3 3 0 0 0-6 0z"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path fill="currentColor" d="m15 6-6 6 6 6 1.4-1.4L11.8 12l4.6-4.6z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path fill="currentColor" d="m9.5 16.2-3.7-3.7-1.4 1.4 5.1 5.1 11-11-1.4-1.4z"/></symbol>
+</svg>
+<div class="setup">
+  <header class="setup-head">
+    <button class="btn icon ghost hidden" id="back" aria-label="Back"><svg><use href="#i-back"/></svg></button>
+    <img class="mark small" src="/static/icon.svg" alt="">
+    <div class="grow"><div class="brand">LED Poster</div><div class="muted small" id="crumb">Wi-Fi setup</div></div>
+    <button class="btn sm hidden" id="refresh">Refresh</button>
+  </header>
+  <main id="step"></main>
+</div>
+<div id="toast" class="hidden" role="status" aria-live="polite"></div>
+<script>
+(() => {
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v; else if (k.startsWith("on")) el[k] = v;
+    else if (k === "html") el.innerHTML = v; else if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) el.append(k.nodeType ? k : document.createTextNode(k));
+  return el;
+};
+const svg = (id, cls = "") => { const t = document.createElement("template"); t.innerHTML = `<svg class="${cls}" aria-hidden="true"><use href="#i-${id}"/></svg>`; return t.content.firstChild; };
+const signal = (pct) => { // 4 bars, Xbox-style
+  const n = pct >= 75 ? 4 : pct >= 50 ? 3 : pct >= 25 ? 2 : 1;
+  const t = document.createElement("template");
+  t.innerHTML = `<svg class="sig" viewBox="0 0 24 24" aria-label="Signal ${pct}%" role="img">${[0, 1, 2, 3].map((i) => `<rect x="${2 + i * 5.5}" y="${18 - i * 4}" width="4" height="${4 + i * 4}" rx="1" fill="currentColor" opacity="${i < n ? 1 : .25}"/>`).join("")}</svg>`;
+  return t.content.firstChild;
+};
+let toastT;
+function toast(msg, error = false) { const t = $("#toast"); t.textContent = msg; t.className = error ? "error" : ""; clearTimeout(toastT); toastT = setTimeout(() => t.classList.add("hidden"), error ? 5000 : 2500); }
+async function api(path, body, method = body ? "POST" : "GET") {
+  const r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok) { let d = null; try { d = await r.json(); } catch {} const e = new Error(typeof (d && d.detail) === "string" ? d.detail : `${r.status} ${r.statusText}`); e.status = r.status; throw e; }
+  return r.json();
+}
+const pwField = (attrs) => { // password input with a show/hide eye (Hatch)
+  const i = h("input", { class: "input", type: "password", ...attrs });
+  const eye = h("button", { type: "button", "aria-label": "Show password", onclick: () => { i.type = i.type === "password" ? "text" : "password"; } }, "👁");
+  return [h("div", { class: "pw" }, i, eye), i];
+};
+
+let setup = null, wifi = null, pollT = null, chosen = null;
+const main = $("#step");
+function show(crumb, { back = null, refresh = null } = {}, ...content) {
+  $("#crumb").textContent = crumb;
+  $("#back").classList.toggle("hidden", !back); $("#back").onclick = back;
+  $("#refresh").classList.toggle("hidden", !refresh); $("#refresh").onclick = refresh;
+  main.replaceChildren(...content.filter((c) => c !== null && c !== undefined && c !== false)); window.scrollTo(0, 0);
+}
+
+/* ---- 1. admin password / sign in. On a fresh wall the password is set *before* joining, while only the
+   card holder can reach this page (threat model in docs/DEVIATIONS.md). ---- */
+function authStep(firstRun) {
+  const [pw, input] = pwField({ autocomplete: firstRun ? "new-password" : "current-password", required: true, autofocus: true });
+  const rule = h("li", { "data-rule": "len" }, "At least 8 characters");
+  const err = h("div", { class: "err" });
+  const submit = h("button", { class: "btn primary block", type: "submit", disabled: firstRun }, firstRun ? "Continue" : "Sign in");
+  input.oninput = () => { if (firstRun) { const ok = input.value.length >= 8; rule.classList.toggle("ok", ok); submit.disabled = !ok; } };
+  const form = h("form", { novalidate: true, onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = ""; submit.disabled = true;
+    try { await api(firstRun ? "/api/auth/setup" : "/api/auth/login", { password: input.value }); await start(); }
+    catch (x) { err.textContent = x.status === 429 ? "Too many attempts. Wait a minute." : x.message; submit.disabled = false; }
+  } },
+    h("h1", {}, firstRun ? "Set an admin password" : "Sign in"),
+    h("p", { class: "muted" }, firstRun ? "First, choose the password that will protect this wall. You need it to sign in from any device, and it is set now so nobody else on your Wi-Fi can claim the wall after it joins." : "Changing the wall's network needs the admin password."),
+    h("label", { class: "field" }, h("span", {}, firstRun ? "New password" : "Password"), pw),
+    firstRun ? h("ul", { class: "rules" }, rule) : null, err, submit);
+  show(firstRun ? "Step 1 of 3 · Admin password" : "Sign in", {}, form);
+}
+
+/* ---- 2. network list (MyDyson, Xbox, Hatch) ---- */
+async function listStep(fresh = false) {
+  show("Choose a network", {}, h("p", { class: "muted", style: "padding:24px 0;text-align:center" }, fresh ? "Scanning…" : "Loading networks…"));
+  try { wifi = fresh ? await api("/api/network/wifi/scan", {}) : await api("/api/network/wifi"); }
+  catch (e) { if (e.status === 401) return start(); show("Choose a network", { refresh: () => listStep(true) }, h("div", { class: "banner error" }, e.message)); return; }
+  const inSetup = wifi.setup_mode;
+  const refresh = async () => {
+    if (inSetup && !confirm("Refreshing switches the setup hotspot off for about 15 seconds. Your phone may disconnect; if it does, rejoin LEDWall-Setup and come back to this page.")) return;
+    listStep(true);
+  };
+  const rows = wifi.networks.map((n) => h("button", { class: "row link netrow", disabled: n.enterprise, onclick: () => passwordStep(n) },
+    h("div", { class: "grow" }, h("span", { class: "label" }, n.ssid),
+      n.enterprise ? h("span", { class: "sub" }, "Enterprise (802.1X) login is not supported") : n.ssid === wifi.current ? h("span", { class: "sub", style: "color:var(--ok)" }, "Connected now") : null),
+    n.secured ? svg("lock", "lock") : null, signal(n.signal)));
+  const help = h("p", { class: "note hidden" }, "The wall's radio is 2.4GHz only, so a 5GHz-only network will not appear. Move it closer to the router and tap Refresh. For a hidden network use “Join other network”.");
+  show(inSetup ? "Step 2 of 3 · Choose a network" : "Change network", { refresh },
+    h("h1", {}, "Choose your Wi-Fi network"),
+    h("p", { class: "muted" }, wifi.networks.length ? "LED Poster can see these networks" : "No networks found. Tap Refresh to scan again."),
+    !inSetup && wifi.current ? h("div", { class: "banner" }, `The wall is on ${wifi.current} now. Joining another network disconnects it from this one; move your phone to the new network afterwards and open http://ledposter.local.`) : null,
+    h("div", { class: "list" }, rows),
+    wifi.scanned_at ? h("p", { class: "note" }, `Scanned ${new Date(wifi.scanned_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${inSetup ? " · the list is from just before the hotspot came up" : ""}`) : null,
+    h("div", { class: "links" },
+      h("button", { class: "linkbtn", onclick: () => passwordStep(null) }, "Join other network…"),
+      h("button", { class: "linkbtn", onclick: () => help.classList.toggle("hidden") }, "I can't see my network")),
+    help);
+}
+
+/* ---- 3. password (Hatch, MyDyson "no password") ---- */
+function passwordStep(n) {
+  const hidden = !n;
+  const ssidInput = hidden ? h("input", { class: "input", required: true, maxlength: 32, placeholder: "Network name (SSID)", autofocus: true, "aria-label": "Network name" }) : null;
+  const [pw, input] = pwField({ autocomplete: "off", maxlength: 63, autofocus: !hidden });
+  const open = h("input", { type: "checkbox" }); open.checked = n ? !n.secured : false;
+  const err = h("div", { class: "err" });
+  const connect = h("button", { class: "btn primary block", type: "submit" }, "Connect");
+  const update = () => { connect.disabled = (hidden && !ssidInput.value.trim()) || (!open.checked && input.value.length < 8); input.disabled = open.checked; pw.classList.toggle("dim", open.checked); };
+  input.oninput = update; open.onchange = update; if (ssidInput) ssidInput.oninput = update; update();
+  const form = h("form", { novalidate: true, onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = ""; connect.disabled = true;
+    const ssid = hidden ? ssidInput.value.trim() : n.ssid;
+    try { setup = await api("/api/network/wifi/join", { ssid, password: open.checked ? null : input.value, hidden }); chosen = { ssid, n, open: open.checked }; joiningStep(); }
+    catch (x) { err.textContent = x.message; connect.disabled = false; }
+  } },
+    h("h1", {}, hidden ? "Join another network" : `Wi-Fi password for ${n.ssid}`),
+    ssidInput ? h("label", { class: "field" }, h("span", {}, "Network name"), ssidInput) : null,
+    h("label", { class: "field" }, h("span", {}, "Password"), pw),
+    (!n || n.secured) ? h("label", { class: "check" }, open, h("span", {}, "This network has no password")) : null,
+    err, connect,
+    wifi && wifi.setup_mode ? h("p", { class: "note" }, "The setup hotspot switches off while LED Poster joins, so this phone will lose it. Watch the wall: it shows “joining”, then the new address, or the reason it failed (and the hotspot comes back).") : null);
+  show(wifi && wifi.setup_mode ? "Step 3 of 3 · Password" : "Password", { back: () => listStep() }, form);
+}
+
+/* ---- 4. joining (MyDyson stepper, Sonos copy) ---- */
+const STEPS = ["Hotspot", "Joining", "Getting IP", "Done"];
+function joiningStep() {
+  clearTimeout(pollT);
+  const target = setup.target || (chosen && chosen.ssid) || "the network";
+  const inSetup = wifi ? wifi.setup_mode : setup.hotspot_up;
+  const steps = (inSetup ? STEPS : ["Start", ...STEPS.slice(1)]).map((s, i) => h("li", { class: "step", "data-i": i }, h("i", {}, svg("check")), h("span", {}, s)));
+  const copy = h("p", { class: "muted", id: "copy" }, `Connecting LED Poster to ${target}…`);
+  const result = h("div", { id: "result" });
+  show("Joining", {}, h("h1", {}, inSetup ? "Joining your Wi-Fi" : "Changing network"), copy, h("ol", { class: "steps" }, steps), result);
+  let lost = 0;
+  const render = () => {
+    const s = setup, failed = s.mode === "failed", done = s.mode === "joined";
+    steps.forEach((li, i) => { li.classList.toggle("done", i < s.step || (done && i <= 3)); li.classList.toggle("active", !done && !failed && i === s.step); li.classList.toggle("failed", failed && i === s.step); });
+    if (failed) {
+      copy.textContent = `Could not join ${target}.`;
+      result.replaceChildren(h("div", { class: "banner error" }, s.reason || "Unknown reason"),
+        inSetup ? h("p", { class: "note" }, "The setup hotspot is back on. If your phone dropped off it, rejoin LEDWall-Setup.") : null,
+        h("div", { class: "actions" }, h("button", { class: "btn", onclick: () => listStep() }, "Pick another"), h("button", { class: "btn primary", onclick: () => passwordStep(chosen && chosen.n ? chosen.n : null) }, "Try again")));
+    } else if (done) {
+      copy.textContent = `LED Poster is on ${target}.`;
+      const url = `http://${s.hostname || "ledposter"}.local${location.port ? ":" + location.port : ""}/`;
+      result.replaceChildren(h("div", { class: "card" }, h("div", { class: "muted small" }, "Open the app at"), h("div", { class: "addr mono" }, url), h("div", { class: "muted small" }, `IP address ${s.ip}`)),
+        inSetup ? h("p", { class: "note" }, "The setup hotspot is off. Move this phone back to your normal Wi-Fi, then open the address above.") : null,
+        h("a", { class: "btn primary block", href: url }, "Open the app"));
+    } else {
+      copy.textContent = s.step >= 2 ? `Joined ${target}, waiting for an IP address…` : `Connecting LED Poster to ${target}…`;
+    }
+  };
+  render();
+  const lostNote = h("p", { class: "note" });
+  const poll = async () => {
+    try {
+      setup = await api("/api/network/setup"); lost = 0; lostNote.remove(); render();
+      if (setup.mode === "joined" || setup.mode === "failed") return;
+    } catch (e) {
+      if (e.status === 401) return start();
+      lost++;
+      if (lost === 3 && inSetup) {
+        lostNote.textContent = "This phone lost the setup hotspot, which is expected while the wall joins. Look at the wall for the result. If it shows an address, move your phone to your normal Wi-Fi and open http://ledposter.local. If it failed, rejoin LEDWall-Setup and reopen this page.";
+        result.before(lostNote);
+        probeHome();
+      }
+    }
+    pollT = setTimeout(poll, 2000);
+  };
+  pollT = setTimeout(poll, 2000);
+}
+async function probeHome() { // after the hotspot is gone: is the wall reachable on the LAN already?
+  const host = `${(setup && setup.hostname) || "ledposter"}.local`;
+  for (let i = 0; i < 30; i++) {
+    try { await fetch(`http://${host}${location.port ? ":" + location.port : ""}/api/auth/state`, { mode: "no-cors", cache: "no-store" }); setup = { ...setup, mode: "joined", step: 3, hostname: host.replace(/\.local$/, "") }; clearTimeout(pollT); joiningStep(); return; }
+    catch { await new Promise((r) => setTimeout(r, 3000)); }
+  }
+}
+
+async function start() {
+  clearTimeout(pollT);
+  try { setup = await api("/api/network/setup"); }
+  catch (e) {
+    if (e.status !== 401) { show("Wi-Fi setup", {}, h("div", { class: "banner error" }, e.message)); return; }
+    const a = await api("/api/auth/state").catch(() => ({ first_run: false }));
+    return authStep(a.first_run);
+  }
+  if (setup.first_run) return authStep(true);  // reachable without login (hotspot + fresh wall): set the password first anyway
+  if (["joining", "failed"].includes(setup.mode)) { wifi = { setup_mode: setup.hotspot_up || !!setup.trigger, networks: [], current: null }; return joiningStep(); }
+  listStep();
+}
+start();
+})();
+</script>
+</body>
+</html>

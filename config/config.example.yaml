@@ -101,6 +101,15 @@ schedule:
     end: '07:00'
     max_brightness: 20
 
+# Networking (milestone 6). The web app drives NetworkManager with nmcli; addresses are DHCP
+# by default (stable client id = MAC), optional static IP from Settings with a 2-minute rollback.
+network:
+  hotspot_ssid: LEDWall-Setup   # first-time setup hotspot; its password is $LEDPOSTER_DATA/setup-password (on the card)
+  hotspot_ip: 10.42.0.1         # must match system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf
+  setup_timeout_s: 60           # no network this long after the web app starts: raise the hotspot
+  show_ip_s: 10                 # how long the hostname + IP stay on the wall at boot
+  wifi_device: ''               # '' = first Wi-Fi device (wlan0 on the Pi)
+
 # Stored by Settings now, used from milestone 7.
 mqtt: {enabled: false, host: '', port: 1883, username: '', password: ''}
 ddp: {enabled: false}

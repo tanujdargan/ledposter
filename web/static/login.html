@@ -28,7 +28,8 @@
 (async () => {
   const $ = (s) => document.querySelector(s);
   const state = await fetch("/api/auth/state").then(r => r.json()).catch(() => ({first_run: false}));
-  if (state.authenticated) { location.replace("/"); return; }
+  const back = () => location.replace("/" + location.hash);  // keeps e.g. #/settings/confirm after a static IP change
+  if (state.authenticated) { back(); return; }
   const first = state.first_run;
   if (first) {
     $("#title").textContent = "Set an admin password";
@@ -54,7 +55,7 @@
       const r = await fetch(first ? "/api/auth/setup" : "/api/auth/login", {
         method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({password: $("#password").value})});
-      if (r.ok) { location.replace("/"); return; }
+      if (r.ok) { back(); return; }
       const d = await r.json().catch(() => ({}));
       $("#err").textContent = d.detail && typeof d.detail === "string" ? d.detail : (r.status === 429 ? "Too many attempts. Wait a minute." : "Could not sign in.");
     } catch { $("#err").textContent = "Cannot reach the wall."; }

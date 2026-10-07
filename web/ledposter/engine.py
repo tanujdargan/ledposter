@@ -92,6 +92,32 @@ class Engine:
                 raise EngineError(resp.get("error") or "engine error")
             return resp
 
+    async def show_text(self, text, seconds=10):
+        """M5 `show_text`: a text overlay on the wall for `seconds`. Best effort: False when
+        the engine is offline or does not know the command (pre-M5 engines)."""
+        try:
+            await self.call("show_text", text=text, seconds=seconds)
+            return True
+        except EngineError as e:
+            log.info("show_text not shown: %s", e)
+            return False
+
+    @staticmethod
+    def setup_request(status):
+        """True while the engine reports a 10s button hold (`wifi_setup_requested`, docs/protocol.md
+        Button); it stays set until `ack_wifi_setup`. `wifi_setup_count`/`_at` say which one."""
+        return bool((status or {}).get("wifi_setup_requested"))
+
+    async def ack_wifi_setup(self):
+        """Clears `wifi_setup_requested`; False if the engine is offline (the flag then stays
+        and the request is seen again on the next poll)."""
+        try:
+            await self.call("ack_wifi_setup")
+            return True
+        except EngineError as e:
+            log.info("ack_wifi_setup failed: %s", e)
+            return False
+
     async def _poll(self):
         delay = 0.5
         while True:

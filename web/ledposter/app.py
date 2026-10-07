@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from python_multipart import MultipartParser
 
-from . import __version__, auth, config, schedule
+from . import __version__, auth, config, net, schedule, wifisetup
 from .engine import Engine, EngineError, EngineOffline, mode_args
 from .media import Library
 from .transcode import MAX_BYTES, SUPPORTED
@@ -25,6 +25,10 @@ from .transcode import MAX_BYTES, SUPPORTED
 log = logging.getLogger("ledposter")
 STATIC = os.path.join(os.path.dirname(__file__), "..", "static")
 TIME_RE = r"^([01]\d|2[0-3]):[0-5]\d$"
+# Connectivity probes phones and laptops send when they join a network. Answered with a
+# redirect to the setup page while the hotspot is up, so the OS opens its captive portal.
+CAPTIVE_PROBES = ["/hotspot-detect.html", "/generate_204", "/gen_204", "/connecttest.txt", "/ncsi.txt", "/redirect",
+                  "/success.txt", "/canonical.html", "/library/test/success.html", "/check_network_status.txt"]
 PATTERNS = [("panel-id", "Panel ID"), ("solid", "Solid colour"), ("cycle", "Colour cycle"),
             ("rows", "Row sweep"), ("cols", "Column sweep")]
 EVENTS = ["kill", "killstreak", "death", "win"]  # game hook overlays (spec: Game hook)
@@ -340,15 +344,96 @@ def mode_defs(engine_modes, playlists):
                                     settings=[color] if color and p in ("solid", "rows", "cols") else [])
                             for p in choices]
     return out + effects + other + patterns
+class Rollback(BaseModel):
+    address: str
+    seconds_left: int = Field(description="Time left to confirm before the wall goes back to DHCP")
+
+
+class NetworkStatus(BaseModel):
+    device: Optional[str] = None
+    type: Optional[Literal["wifi", "ethernet"]] = None
+    connection: Optional[str] = Field(None, description="NetworkManager profile name")
+    state: str
+    mac: Optional[str] = Field(None, description="For a DHCP reservation in the router")
+    address: Optional[str] = None
+    prefix: Optional[int] = None
+    gateway: Optional[str] = None
+    dns: list[str] = []
+    method: Optional[str] = Field(None, description="dhcp or static")
+    ssid: Optional[str] = None
+    signal: Optional[int] = Field(None, description="0 to 100")
+    hostname: str
+    hotspot: bool = Field(description="The setup hotspot is what is up, not a network")
+    rollback: Optional[Rollback] = Field(None, description="A static IP is waiting to be confirmed")
+    setup_mode: bool = Field(description="Setup hotspot is up")
+
+
+class WifiNetwork(BaseModel):
+    ssid: str
+    signal: int
+    security: str
+    secured: bool
+    enterprise: bool = Field(description="802.1X: cannot be joined with a password")
+
+
+class WifiList(BaseModel):
+    networks: list[WifiNetwork]
+    scanned_at: Optional[float] = None
+    current: Optional[str] = Field(None, description="SSID the wall is on now")
+    setup_mode: bool
+
+
+class WifiJoin(BaseModel):
+    ssid: str = Field(min_length=1, max_length=32)
+    password: Optional[str] = Field(None, max_length=63, description="Omit or empty for an open network")
+    hidden: bool = False
+
+
+class SetupState(BaseModel):
+    mode: Literal["off", "starting", "hotspot", "scanning", "joining", "joined", "failed"]
+    hotspot_up: bool
+    step: int = Field(description="0 hotspot, 1 joining, 2 getting IP, 3 done")
+    target: Optional[str] = Field(None, description="SSID being joined")
+    reason: Optional[str] = Field(None, description="Why the last join failed")
+    ip: Optional[str] = None
+    hostname: Optional[str] = None
+    trigger: Optional[str] = Field(None, description="Why setup mode started (boot, button, Settings)")
+    ssid: str = Field(description="Hotspot SSID")
+    hotspot_ip: str
+    first_run: bool
+    authenticated: bool
+
+
+class StaticIp(BaseModel):
+    address: str
+    prefix: int = Field(ge=8, le=30)
+    gateway: Optional[str] = Field(None, description="Default: the current gateway")
+    dns: list[str] = Field([], max_length=3, description="Default: the gateway")
+
+
+class StaticApplied(BaseModel):
+    address: str
+    url: str = Field(description="Open this within the deadline and confirm, or the wall reverts to DHCP")
+    seconds: int
+
+
+class Hostname(BaseModel):
+    hostname: str = Field(min_length=1, max_length=63)
+
+
+class HostnameSet(BaseModel):
+    hostname: str
+    url: str
 
 
 # -- app -----------------------------------------------------------------------------
 
-def create_app(data_dir=None):
+def create_app(data_dir=None, net_runner=None):
+    """`net_runner` replaces the subprocess runner for nmcli & co (tests, LEDPOSTER_FAKE_NET)."""
     data_dir = data_dir or config.data_dir()
     app = FastAPI(title="ledposter", version=__version__, description=DESCRIPTION,
                   openapi_tags=[{"name": "auth"}, {"name": "control"}, {"name": "media"},
-                                {"name": "playlists"}, {"name": "schedule"}, {"name": "settings"}])
+                                {"name": "playlists"}, {"name": "schedule"}, {"name": "settings"}, {"name": "network"}])
     st = app.state
     st.data_dir = data_dir
     st.cfg_path = os.path.join(data_dir, "config.yaml")
@@ -360,6 +445,12 @@ def create_app(data_dir=None):
     st.save_task = None
     st.engine_modes = None  # last list_modes reply; the picker falls back to it while the engine is offline
     st.event_limiter = auth.RateLimiter(limit=EVENT_LIMIT, window=EVENT_WINDOW_S)
+    ncfg = st.cfg["network"]
+    st.net = net.Net(net_runner or net.run_subprocess, data_dir, hotspot_ssid=ncfg["hotspot_ssid"],
+                     hotspot_ip=ncfg["hotspot_ip"], device=ncfg.get("wifi_device") or None)
+    st.setup = wifisetup.WifiSetup(st.net, st.engine.show_text, data_dir, ssid=ncfg["hotspot_ssid"],
+                                   timeout_s=float(ncfg["setup_timeout_s"]), show_ip_s=int(ncfg["show_ip_s"]))
+    st.net_task = None  # pending static/DHCP apply, delayed so the browser gets its response first
 
     def save():
         config.save(st.cfg, st.cfg_path)
@@ -410,9 +501,10 @@ def create_app(data_dir=None):
     async def lifespan(app):
         await st.engine.start()
         await st.library.start()
-        task = asyncio.create_task(schedule_loop())
+        tasks = [asyncio.create_task(schedule_loop()), asyncio.create_task(st.setup.loop(st.engine))]
         yield
-        task.cancel()
+        for task in tasks:
+            task.cancel()
         if st.save_task and not st.save_task.done():
             st.save_task.cancel()
             save()
@@ -447,6 +539,16 @@ def create_app(data_dir=None):
             raise HTTPException(401, "Not authenticated", headers={"WWW-Authenticate": "Bearer"})
         return who
 
+    def setup_auth(request: Request):
+        """Setup endpoints: normal auth, or open while the hotspot is up on a wall that has no
+        admin password yet (only someone with the card's hotspot password can reach it)."""
+        who = principal(request.headers.get("authorization"), request.cookies.get("session"))
+        if who:
+            return who
+        if st.setup.state["hotspot_up"] and first_run():
+            return "setup"
+        raise HTTPException(401, "Not authenticated", headers={"WWW-Authenticate": "Bearer"})
+
     def set_session(response):
         response.set_cookie("session", st.sessions.issue(st.cfg["web"]["admin_password"]),
                             max_age=auth.SESSION_TTL, httponly=True, samesite="strict", path="/")
@@ -477,6 +579,24 @@ def create_app(data_dir=None):
         if principal(None, request.cookies.get("session")):
             return RedirectResponse("/", 302)
         return FileResponse(os.path.join(STATIC, "login.html"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/setup", include_in_schema=False)
+    def setup_page():
+        """Captive portal / change-network wizard. The page is public like /login; the data
+        behind it is gated by setup_auth."""
+        return FileResponse(os.path.join(STATIC, "setup.html"), headers={"Cache-Control": "no-store"})
+
+    def server_url(request, host):
+        port = (request.scope.get("server") or ("", 80))[1] or 80
+        return f"http://{host}" + ("" if int(port) == 80 else f":{port}")
+
+    def captive_probe(request: Request):
+        if not st.setup.state["hotspot_up"]:
+            raise HTTPException(404)
+        return RedirectResponse(server_url(request, st.net.hotspot_ip) + "/setup", 302)
+
+    for p in CAPTIVE_PROBES:
+        app.get(p, include_in_schema=False)(captive_probe)
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     def manifest():
@@ -870,6 +990,163 @@ def create_app(data_dir=None):
         needed = await reload()
         restart = bool(needed) or before.matrix != body.matrix
         return SettingsSaved(**body.model_dump(), restart_required=restart)
+
+    # -- network ---------------------------------------------------------------------
+
+    async def net_call(fn, *args):
+        try:
+            return await asyncio.to_thread(fn, *args)
+        except net.NetError as e:
+            raise HTTPException(503, str(e))
+
+    def apply_later(coro_fn, delay=1.5):
+        """Run a network change after the response has left, so the browser is not cut off
+        mid-request when the address changes."""
+        async def later():
+            await asyncio.sleep(delay)
+            try:
+                await coro_fn()
+            except Exception:
+                log.exception("network change")
+        st.net_task = asyncio.create_task(later())
+
+    def network_model(s):
+        rb = st.net.rollback_pending()
+        return NetworkStatus(**s, rollback=Rollback(address=rb["address"], seconds_left=rb["seconds_left"]) if rb else None,
+                             setup_mode=st.setup.state["hotspot_up"])
+
+    @app.get("/api/network", response_model=NetworkStatus, tags=["network"],
+             summary="Address, Wi-Fi, hostname and any pending static IP confirmation")
+    async def network(who=Depends(require_auth)):
+        return network_model(await net_call(st.net.status))
+
+    @app.put("/api/network/hostname", response_model=HostnameSet, tags=["network"],
+             summary="Set the hostname (one RFC 1123 label); ledposter.local follows it")
+    async def set_hostname(body: Hostname, request: Request, who=Depends(require_auth)):
+        try:
+            name = net.valid_hostname(body.hostname)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        await net_call(st.net.set_hostname, name)
+        return HostnameSet(hostname=name, url=server_url(request, f"{name}.local") + "/")
+
+    @app.post("/api/network/static", response_model=StaticApplied, tags=["network"],
+              summary="Static IP, validated against the current subnet, with a 2-minute DHCP rollback",
+              description="Arms a systemd timer that puts the connection back on DHCP, then applies the address "
+                          "1.5s after this response. Open `url` on the new address and POST "
+                          "`/api/network/static/confirm` before `seconds` run out, or the rollback happens.")
+    async def set_static(body: StaticIp, request: Request, who=Depends(require_auth)):
+        cur = await net_call(st.net.status)
+        try:
+            v = net.validate_static(body.address, body.prefix, body.gateway, body.dns, cur)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        if not cur.get("connection") or cur.get("hotspot"):
+            raise HTTPException(409, "The wall is not on a network right now")
+        if v["address"] != cur["address"] and await net_call(st.net.address_in_use, v["address"]):
+            raise HTTPException(409, f"{v['address']} already answers on this network; pick another address")
+        con = cur["connection"]
+        await net_call(st.net.arm_rollback, con, v["address"])
+
+        async def apply():
+            try:
+                await asyncio.to_thread(st.net.set_static, con, v["address"], v["prefix"], v["gateway"], v["dns"])
+            except net.NetError as e:
+                log.error("static IP not applied, rollback cancelled: %s", e)
+                await asyncio.to_thread(st.net.cancel_rollback)
+        apply_later(apply)
+        return StaticApplied(address=v["address"], url=server_url(request, v["address"]) + "/#/settings/confirm",
+                             seconds=net.ROLLBACK_SECONDS)
+
+    @app.post("/api/network/static/confirm", response_model=NetworkStatus, tags=["network"],
+              summary="Keep the new static IP (cancels the rollback timer)")
+    async def confirm_static(who=Depends(require_auth)):
+        if not st.net.rollback_pending():
+            raise HTTPException(409, "No static IP change is waiting for confirmation")
+        if st.net_task and not st.net_task.done():
+            await st.net_task  # a confirm racing the delayed apply must not leave the change unprotected
+        await net_call(st.net.cancel_rollback)
+        return network_model(await net_call(st.net.status))
+
+    @app.post("/api/network/dhcp", response_model=HostnameSet, tags=["network"], summary="Back to DHCP now")
+    async def set_dhcp(request: Request, who=Depends(require_auth)):
+        cur = await net_call(st.net.status)
+        if not cur.get("connection") or cur.get("hotspot"):
+            raise HTTPException(409, "The wall is not on a network right now")
+        con, host = cur["connection"], cur["hostname"]
+        if st.net.rollback_pending():
+            await net_call(st.net.cancel_rollback)
+
+        async def apply():
+            await asyncio.to_thread(st.net.set_dhcp, con)
+        apply_later(apply)
+        return HostnameSet(hostname=host, url=server_url(request, f"{host}.local") + "/")
+
+    @app.post("/api/network/show_ip", response_model=Ok, tags=["network"], summary="Show hostname and IP on the wall for 10s")
+    async def show_ip(who=Depends(require_auth)):
+        await st.setup.show_ip()
+        return Ok()
+
+    def setup_model(request):
+        return SetupState(**st.setup.public(first_run()),
+                          authenticated=principal(request.headers.get("authorization"), request.cookies.get("session")) is not None)
+
+    @app.get("/api/network/setup", response_model=SetupState, tags=["network"],
+             summary="Setup hotspot / join progress (open without login only on a first-run wall in setup mode)")
+    def setup_state(request: Request, who=Depends(setup_auth)):
+        return setup_model(request)
+
+    @app.post("/api/network/setup/start", response_model=SetupState, tags=["network"],
+              summary="Raise the LEDWall-Setup hotspot (the wall leaves its current network)")
+    async def setup_start(request: Request, who=Depends(require_auth)):
+        await st.setup.start("Started from Settings")
+        if st.setup.state["mode"] == "off":
+            raise HTTPException(503, st.setup.state.get("reason") or "Hotspot failed")
+        return setup_model(request)
+
+    @app.post("/api/network/setup/stop", response_model=SetupState, tags=["network"], summary="Drop the setup hotspot")
+    async def setup_stop(request: Request, who=Depends(require_auth)):
+        await st.setup.stop()
+        return setup_model(request)
+
+    def wifi_model():
+        s = st.setup.state
+        return WifiList(networks=[WifiNetwork(**n) for n in s["networks"]], scanned_at=s["scanned_at"],
+                        current=None, setup_mode=s["hotspot_up"])
+
+    @app.get("/api/network/wifi", response_model=WifiList, tags=["network"],
+             summary="Nearby networks (cached from the last scan while the hotspot is up)")
+    async def wifi_list(who=Depends(setup_auth)):
+        if not st.setup.state["networks"] and not st.setup.state["hotspot_up"]:
+            await st.setup.rescan()
+        m = wifi_model()
+        if not st.setup.state["hotspot_up"]:
+            try:
+                m.current = (await asyncio.to_thread(st.net.status)).get("ssid")
+            except net.NetError:
+                pass
+        return m
+
+    @app.post("/api/network/wifi/scan", response_model=WifiList, tags=["network"],
+              summary="Rescan. In setup mode the hotspot drops for about 15s and comes back")
+    async def wifi_scan(who=Depends(setup_auth)):
+        await st.setup.rescan()
+        if st.setup.state["mode"] == "off" and st.setup.state.get("reason"):
+            raise HTTPException(503, st.setup.state["reason"])
+        return wifi_model()
+
+    @app.post("/api/network/wifi/join", response_model=SetupState, tags=["network"],
+              summary="Join a network. Returns at once; poll /api/network/setup for progress",
+              description="In setup mode the hotspot switches off while joining and comes back if the join fails, "
+                          "so the client loses this server for a while either way. The wall shows each step.")
+    async def wifi_join(body: WifiJoin, request: Request, who=Depends(setup_auth)):
+        if body.password and not 8 <= len(body.password) <= 63:
+            raise HTTPException(422, "Wi-Fi passwords are 8 to 63 characters")
+        try:
+            st.setup.join(body.ssid, body.password or None, body.hidden)
+        except net.NetError as e:
+            raise HTTPException(409, str(e))
+        return setup_model(request)
 
     # -- preview ---------------------------------------------------------------------
 

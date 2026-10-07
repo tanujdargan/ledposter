@@ -1,0 +1,10 @@
+# Armed by the web app (systemctl restart) right before it applies a static IP. Fires once,
+# 120s after it was started, unless the app stops it when the owner confirms the new address.
+# Installed by M8 together with ledposter-net-rollback.service; not enabled at boot.
+[Unit]
+Description=Revert the LED wall to DHCP unless its static IP is confirmed
+
+[Timer]
+OnActiveSec=120
+AccuracySec=1s
+RemainAfterElapse=no

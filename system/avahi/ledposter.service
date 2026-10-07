@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Advertises the web app as an _http._tcp service next to the host name ledposter.local.
+     Installed by M8 as /etc/avahi/services/ledposter.service; avahi-daemon picks it up by itself.
+     %h is the current host name, so a hostname change in Settings is reflected automatically. -->
+<service-group>
+  <name replace-wildcards="yes">LED Poster on %h</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>80</port>
+    <txt-record>path=/</txt-record>
+    <txt-record>product=ledposter</txt-record>
+  </service>
+</service-group>

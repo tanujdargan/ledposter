@@ -1,0 +1,49 @@
+#!/bin/sh
+# Root-side helpers for the LED wall's networking, run by the systemd units in system/systemd.
+# M8 installs this as /usr/local/bin/ledposter-net. Keep `rollback` in step with Net.set_dhcp
+# in web/ledposter/net.py.
+#
+#   ledposter-net rollback   put the connection named in $LEDPOSTER_DATA/net-rollback back on
+#                            DHCP (the web app removes that file when the owner confirms)
+#   ledposter-net hosts      rewrite the 127.0.1.1 line of /etc/hosts with the current hostname
+set -eu
+
+data="${LEDPOSTER_DATA:-/data}"
+note="$data/net-rollback"
+
+case "${1:-}" in
+  rollback)
+    if [ ! -f "$note" ]; then
+      echo "ledposter-net: no rollback pending ($note missing)"
+      exit 0
+    fi
+    con="$(head -n 1 "$note")"
+    rm -f "$note"
+    if [ -z "$con" ]; then
+      echo "ledposter-net: rollback note is empty" >&2
+      exit 1
+    fi
+    echo "ledposter-net: static IP on '$con' was not confirmed, back to DHCP"
+    nmcli connection modify "$con" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ipv4.ignore-auto-dns no
+    dev="$(nmcli -t -f DEVICE,CONNECTION device status | awk -F: -v c="$con" '$2 == c { print $1; exit }')"
+    if [ -n "$dev" ] && nmcli device reapply "$dev"; then
+      exit 0
+    fi
+    nmcli -w 30 connection up "$con"
+    ;;
+  hosts)
+    name="$(hostname)"
+    if grep -q '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+      sed -i "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t$name/" /etc/hosts
+    else
+      printf '127.0.1.1\t%s\n' "$name" >> /etc/hosts
+    fi
+    # avahi-daemon follows hostnamed on its own; the restart only covers builds that do not
+    systemctl try-restart avahi-daemon.service 2>/dev/null || true
+    echo "ledposter-net: /etc/hosts now maps 127.0.1.1 to $name"
+    ;;
+  *)
+    echo "usage: ledposter-net rollback|hosts" >&2
+    exit 2
+    ;;
+esac

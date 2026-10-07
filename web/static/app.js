@@ -688,7 +688,89 @@ async function renderTokens() {
     h("button", { class: "row link", onclick: create },
       h("div", { class: "grow" }, h("span", { class: "label", style: "color:var(--accent)" }, "+ Create token"))));
 }
-views.settings = async () => { views.current = "settings"; await loadSettings(); bindSettings(); renderTokens(); };
+/* ---- settings: network (M6) ---- */
+let network = null, rollbackT = null;
+const sigBars = (pct) => { const n = pct >= 75 ? 4 : pct >= 50 ? 3 : pct >= 25 ? 2 : 1; const t = document.createElement("template"); t.innerHTML = `<svg class="sig" viewBox="0 0 24 24" aria-label="Signal ${pct}%" role="img">${[0, 1, 2, 3].map((i) => `<rect x="${2 + i * 5.5}" y="${18 - i * 4}" width="4" height="${4 + i * 4}" rx="1" fill="currentColor" opacity="${i < n ? 1 : .25}"/>`).join("")}</svg>`; return t.content.firstChild; };
+const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+async function renderNetwork() {
+  const list = $("#net-list");
+  try { network = await api("/api/network"); }
+  catch (e) { list.replaceChildren(h("div", { class: "row" }, h("div", { class: "grow" }, h("span", { class: "label" }, "Network unavailable"), h("span", { class: "sub" }, e.message)))); return; }
+  const n = network;
+  $("#net-mac").textContent = n.mac || "–";
+  const wifiSub = n.hotspot ? "Setup hotspot is on" : n.type === "ethernet" ? "Wired (Ethernet)" : n.ssid ? `${n.ssid}${n.signal !== null && n.signal !== undefined ? ` · ${n.signal}%` : ""}` : "Not connected";
+  const ipSub = n.address ? `${n.method === "static" ? "Static" : "DHCP"} · ${n.address}/${n.prefix}${n.gateway ? ` · gateway ${n.gateway}` : ""}` : "No address";
+  list.replaceChildren(
+    h("a", { class: "row link", href: "/setup" }, h("div", { class: "grow" }, h("span", { class: "label" }, "Wi-Fi"), h("span", { class: "sub" }, wifiSub)), n.signal !== null && n.signal !== undefined && !n.hotspot ? sigBars(n.signal) : null, icon("chev", "chev")),
+    h("button", { class: "row link", onclick: ipSheet }, h("div", { class: "grow" }, h("span", { class: "label" }, "IP address"), h("span", { class: "sub" }, ipSub)), icon("chev", "chev")),
+    h("button", { class: "row link", onclick: hostnameSheet }, h("div", { class: "grow" }, h("span", { class: "label" }, "Hostname"), h("span", { class: "sub mono" }, `http://${n.hostname}.local`)), icon("chev", "chev")));
+  renderRollback();
+}
+function renderRollback() {
+  const b = $("#net-rollback"); clearInterval(rollbackT);
+  const rb = network && network.rollback;
+  if (!rb) { b.classList.add("hidden"); return; }
+  let left = rb.seconds_left;
+  const draw = () => { b.replaceChildren(h("div", {}, `Static IP ${rb.address} is on trial. Confirm within `, h("b", { class: "num" }, mmss(Math.max(0, left))), " or the wall goes back to DHCP."), h("div", { class: "actions", style: "margin-top:8px" }, h("button", { class: "btn primary sm", onclick: confirmStatic }, "Keep this address"))); if (left-- <= 0) { clearInterval(rollbackT); renderNetwork(); } };
+  draw(); b.classList.remove("hidden"); rollbackT = setInterval(draw, 1000);
+}
+async function confirmStatic() {
+  try { network = await api("/api/network/static/confirm", { method: "POST" }); toast(`Static IP ${network.address} confirmed`); renderNetwork(); }
+  catch (e) { toast(e.message, true); renderNetwork(); }
+}
+function hostnameSheet() {
+  const input = h("input", { class: "input", value: network.hostname, maxlength: 63, autocapitalize: "off", autocomplete: "off", spellcheck: "false" }), err = h("div", { class: "err" });
+  openSheet(h("form", { onsubmit: async (e) => { e.preventDefault(); err.textContent = ""; const name = input.value.trim().toLowerCase(); if (!/^(?!-)[a-z0-9-]{1,63}(?<!-)$/.test(name)) { err.textContent = "Letters, digits and hyphens only, not at the start or end."; return; } try { const r = await api("/api/network/hostname", { method: "PUT", body: { hostname: name } }); closeSheet(); toast(`Hostname set. The wall is now ${r.url}`); renderNetwork(); } catch (x) { err.textContent = x.message; } } },
+    h("h3", {}, "Hostname"), h("p", { class: "muted" }, "The wall is reached as this name plus .local (mDNS). Letters, digits and hyphens."),
+    h("label", { class: "field" }, h("span", {}, "Name"), input), err,
+    h("div", { class: "actions" }, h("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"), h("button", { class: "btn primary", type: "submit" }, "Save"))));
+  input.focus();
+}
+function ipSheet() {
+  const n = network, isStatic = n.method === "static";
+  const seg = h("div", { class: "seg", role: "radiogroup" }, [["dhcp", "DHCP (recommended)"], ["static", "Static"]].map(([v, l]) => { const i = h("input", { type: "radio", name: "ipmode", value: v, onchange: () => fields.classList.toggle("hidden", v !== "static") }); i.checked = (isStatic ? "static" : "dhcp") === v; return h("label", {}, i, h("span", {}, l)); }));
+  const addr = h("input", { class: "input mono", value: n.address || "", inputmode: "decimal", placeholder: "192.168.1.50" });
+  const prefix = h("input", { class: "input mono", type: "number", min: 8, max: 30, value: n.prefix || 24, disabled: "" });
+  const gw = h("input", { class: "input mono", value: n.gateway || "", inputmode: "decimal" });
+  const dns = h("input", { class: "input mono", value: (n.dns || []).join(", "), inputmode: "decimal", placeholder: "gateway" });
+  const fields = h("div", { class: isStatic ? "" : "hidden" },
+    h("label", { class: "field" }, h("span", {}, "Address"), addr),
+    h("div", { class: "inline" }, h("label", { class: "field" }, h("span", {}, "Prefix"), prefix), h("label", { class: "field" }, h("span", {}, "Gateway"), gw)),
+    h("label", { class: "field" }, h("span", {}, "DNS servers (comma separated)"), dns),
+    h("p", { class: "note" }, "Checked against the network the wall is on now (the prefix stays the current one). After Apply you are sent to the new address and have 2 minutes to confirm there; otherwise the wall goes back to DHCP by itself, even if this app is gone."));
+  const err = h("div", { class: "err" });
+  const apply = async () => {
+    err.textContent = "";
+    const mode = $("input[name=ipmode]:checked", seg).value;
+    try {
+      if (mode === "dhcp") {
+        if (!isStatic) { closeSheet(); return; }
+        const r = await api("/api/network/dhcp", { method: "POST" });
+        openSheet(h("h3", {}, "Back to DHCP"), h("p", { class: "muted" }, `The router hands out the address now; it usually gives the same one back. If this page stops responding, open ${r.url}`), h("div", { class: "actions" }, h("a", { class: "btn primary", href: r.url }, "Open by name")));
+        return;
+      }
+      const r = await api("/api/network/static", { method: "POST", body: { address: addr.value.trim(), prefix: +prefix.value, gateway: gw.value.trim() || null, dns: dns.value.split(",").map((s) => s.trim()).filter(Boolean) } });
+      let left = 5;
+      const count = h("div", { class: "countdown num" }, String(left));
+      openSheet(h("h3", {}, "Applying the static IP"), h("p", { class: "muted" }, `The wall is moving to ${r.address}. You will be sent to the new address in`), count,
+        h("p", { class: "note" }, `Sign in there if asked and tap “Keep this address” within ${mmss(r.seconds)}. No confirmation: the wall returns to DHCP automatically.`),
+        h("div", { class: "actions" }, h("a", { class: "btn primary", href: r.url }, "Go now")));
+      const t = setInterval(() => { count.textContent = String(--left); if (left <= 0) { clearInterval(t); location.href = r.url; } }, 1000);
+    } catch (e) { err.textContent = e.message; }
+  };
+  openSheet(h("h3", {}, "IP address"), seg, h("div", { style: "height:12px" }), fields, err,
+    h("div", { class: "actions" }, h("button", { class: "btn", onclick: closeSheet }, "Cancel"), h("button", { class: "btn primary", onclick: apply }, "Apply")));
+}
+$("#show-ip").onclick = async () => { try { await api("/api/network/show_ip", { method: "POST" }); toast("Address is on the wall for 10 seconds"); } catch (e) { toast(e.message, true); } };
+$("#setup-hotspot").onclick = async () => {
+  if (!await confirmSheet("Start the setup hotspot?", "The wall leaves its current Wi-Fi and opens the LEDWall-Setup hotspot (password on the card). This app will stop responding until a network is joined from the setup page, or the wall is restarted.", "Start hotspot", false)) return;
+  try { await api("/api/network/setup/start", { method: "POST" }); toast("Hotspot starting. Join LEDWall-Setup on your phone."); } catch (e) { toast(e.message, true); }
+};
+views.settings = async (arg) => {
+  views.current = "settings";
+  await loadSettings(); bindSettings(); renderTokens();
+  if (arg === "confirm") { history.replaceState(null, "", "#/settings"); await confirmStatic(); } else renderNetwork();
+};
 
 /* ---- init ---- */
 (async () => {

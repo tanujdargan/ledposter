@@ -56,10 +56,12 @@ class FakeEngine:
         self.w, self.h = w, h
         self.calls = []
         self.list_modes = True
+        self.texts = []  # show_text calls (M5 command used by the networking code)
         self.state = {"mode": "pattern", "mode_name": "panel-id", "fps": 15.0, "amps": 1.2, "amps_unlimited": 1.2,
                       "limited": False, "ceiling_amps": 13.0,
                       "brightness": {"user": 100, "auto": None, "auto_enabled": True, "effective": 100, "output": 100},
-                      "lux": None, "sensor": "missing", "power": True, "w": w, "h": h, "uptime_s": 1}
+                      "lux": None, "sensor": "missing", "power": True, "w": w, "h": h, "uptime_s": 1,
+                      "wifi_setup_requested": False, "wifi_setup_count": 0, "wifi_setup_at": None}
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.started = threading.Event()
@@ -115,7 +117,21 @@ class FakeEngine:
             return {"ok": True, "ms": OVERLAY_MS[req["event"]]}
         if cmd == "reload_config":
             return {"ok": True, "restart_needed": []}
+        if cmd == "show_text":  # M5 overlay; recorded for the networking tests
+            if not isinstance(req.get("text"), str) or not isinstance(req.get("seconds"), (int, float)):
+                return {"ok": False, "error": "show_text needs text and seconds"}
+            self.texts.append((req["text"], req["seconds"]))
+            return {"ok": True}
+        if cmd == "ack_wifi_setup":
+            self.state["wifi_setup_requested"] = False
+            return {"ok": True}
         return {"ok": False, "error": f"unknown command {cmd!r}"}
+
+    def hold_button(self):
+        """What a 10s press does to the status (docs/protocol.md, Button)."""
+        self.state["wifi_setup_requested"] = True
+        self.state["wifi_setup_count"] += 1
+        self.state["wifi_setup_at"] = 1_700_000_000 + self.state["wifi_setup_count"]
 
     async def _control(self, reader, writer):
         try:
