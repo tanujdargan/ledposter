@@ -42,7 +42,34 @@ engine:
   preview_fps: 15                             # max preview messages per second per client
 
 display:
-  gamma: 2.2   # engine LUT for patterns (later effects/text); the transcoder bakes the same curve into media
+  gamma: 2.2   # engine LUT for patterns, effects, clock and text; the transcoder bakes the same curve into media
+
+# BDF fonts for text, clock and on-wall messages. Default: the fonts of the
+# vendor/rpi-rgb-led-matrix checkout the engine was built from.
+# fonts:
+#   dir: /home/pi/ledposter/vendor/rpi-rgb-led-matrix/fonts
+
+# One momentary push button between a GPIO and GND (README: Wiring). The engine
+# turns on the pull-up, so pressed reads low. Remove `gpio` to turn it off.
+button:
+  gpio: 25              # BCM number: header pin 22 (GND next to it on pin 20); free on adafruit-hat(-pwm)
+  chip: /dev/gpiochip0  # the Pi 3B's GPIO controller
+  debounce_ms: 30
+  long_ms: 2000         # held this long, then released: display on/off
+  very_long_ms: 10000   # held this long: Wi-Fi setup (fires while still held)
+  skip_playlist_items: true  # short press in a playlist: its next item; after the last one, the next cycle entry
+  # Short press: the next entry. Same fields as set_mode (docs/protocol.md);
+  # quote colors ("ff0000") so YAML keeps them as text.
+  cycle:
+    - {mode: effect, effect: plasma}
+    - {mode: effect, effect: fire}
+    - {mode: effect, effect: spider-sense}
+    - {mode: effect, effect: web-shot}
+    - {mode: effect, effect: uav-radar}
+    - {mode: effect, effect: starfield}
+    - {mode: clock, date: true}
+    - {mode: playlist, playlist: demo}
+    - {mode: idle}
 
 # Named playlists for `ledengine --playlist NAME`. media is a media id: a folder
 # in $LEDPOSTER_DATA/media made by `python -m ledposter.transcode`.

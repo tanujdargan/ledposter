@@ -91,6 +91,14 @@ struct Playlist {
   int current() const { return order[pos]; }
   int64_t end() const { return start + item_ms[current()]; }
 
+  // Jumps to the next item at t (the button); false on the last item of the pass.
+  bool skip(int64_t t) {
+    seek(t);
+    if (done || pos + 1 >= order.size()) return false;
+    pos++, start = t;
+    return true;
+  }
+
   // Advances to t (non-decreasing) and returns ms into the current item.
   int64_t seek(int64_t t) {
     while (!done && t >= end()) {
@@ -112,13 +120,17 @@ struct Playlist {
 
 // Media player mode: clips[i] is playlist item i.
 inline Mode media_mode(const std::string &name, std::vector<Clip> clips, Playlist pl) {
-  return {name, false, [clips = std::move(clips), pl = std::move(pl)](Frame &f, int64_t t) mutable {
-            const int64_t into = pl.seek(t);
-            const Clip &c = clips[pl.current()];
-            const int64_t local = into % c.total_ms();
-            const size_t i = c.frame_at(local);
-            std::memcpy(f.rgb.data(), c.frame(i), c.frame_bytes());
-            if (pl.done) return t + 1000;
-            return std::min(pl.end(), t - local + c.ends_ms[i]);
-          }};
+  auto p = std::make_shared<Playlist>(std::move(pl));
+  Mode m{name, false, [clips = std::move(clips), p](Frame &f, int64_t t) {
+           Playlist &pl = *p;
+           const int64_t into = pl.seek(t);
+           const Clip &c = clips[pl.current()];
+           const int64_t local = into % c.total_ms();
+           const size_t i = c.frame_at(local);
+           std::memcpy(f.rgb.data(), c.frame(i), c.frame_bytes());
+           if (pl.done) return t + 1000;
+           return std::min(pl.end(), t - local + c.ends_ms[i]);
+         }};
+  m.skip = [p](int64_t t) { return p->skip(t); };
+  return m;
 }

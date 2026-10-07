@@ -4,7 +4,7 @@ Software for a 128 x 192 LED wall: six 64x64 P3 HUB75 panels on a Raspberry Pi 3
 
 ```
 engine/   C++ display engine (owns the matrix, frame loop, brightness and limiter, light sensor,
-          media playback, control and preview sockets)
+          media playback, effects, clock, text, overlays, the button, control and preview sockets)
 web/      Python package `ledposter`: FastAPI web app + REST API, transcoder, engine client
 web/static  the PWA (vanilla JS, no build step)
 config/   example YAML configs (all hardware tunables live here)
@@ -12,7 +12,7 @@ vendor/   hzeller/rpi-rgb-led-matrix (git submodule, pinned)
 docs/     spec, architecture contracts, engine socket protocol (protocol.md), UI references, deviations
 ```
 
-Status: **milestone 4**, the web app. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 adds the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`.
+Status: **milestone 5**, effects, clock, text, overlays, the button and the game hook. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 added the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`. Milestone 5 adds the engine-drawn modes: six generative effects (spider-sense ripple, web-shot trace, UAV radar sweep, plasma, fire, starfield), a clock, an idle screen and a text scroller, each with settings (speed, colors, ...) that the engine describes (`list_modes`) and the web app's mode picker is built from; overlays on top of any mode (game hook events `kill`, `killstreak`, `death`, `win` via `POST /api/event` and `tools/game_hook.py`, and `show_text` messages); and the push button (short press: next mode or playlist item, 2s: display on/off, 10s: Wi-Fi setup request).
 
 ## Wiring assumptions
 
@@ -38,6 +38,14 @@ Status: **milestone 4**, the web app. Milestone 1 gave config-driven matrix init
   | ADDR | GND or unconnected: address `0x23` (tied to 3.3V it is `0x5c`; set `sensors.bh1750.address`) |
 
   Put it where it sees the room, not the wall's own light.
+- Push button (momentary, normally open) between **GPIO25** and GND, no resistor (the engine turns on the Pi's internal pull-up, so pressed reads low):
+
+  | Button | Pi |
+  |---|---|
+  | one leg | GPIO25 (pin 22) |
+  | other leg | GND (pin 20, right next to it) |
+
+  GPIO25 is free with both `adafruit-hat` and `adafruit-hat-pwm` (they use GPIO 4/18, 5, 6, 12, 13, 16, 17, 20, 21, 22, 23, 24, 26, 27; the BH1750 uses 2 and 3). The bonnet covers the header: solder the two wires to pins 22 and 20 from under the Pi, or put a stacking header between the Pi and the bonnet and use its pins. Another free pin works too (7, 8, 9, 10, 11, 19): set `button.gpio` to its BCM number. Keep the wires short or twisted; the default 30ms `debounce_ms` handles normal contact bounce.
 
 ## Pi setup (once)
 
@@ -52,8 +60,10 @@ In `/boot/firmware/config.txt` set `dtparam=audio=off`. Then append `isolcpus=3`
 
 ```sh
 cd engine
-make test        # mapping, limiter, brightness curve, pattern, media, playlist and IPC parsing tests;
-                 # runs on any machine (needs nlohmann-json, header only)
+make test        # mapping, limiter, brightness curve, pattern, media, playlist, IPC parsing, effect,
+                 # text, overlay and button tests; runs on any machine (needs nlohmann-json, header
+                 # only, and the vendor submodule for its font parser and fonts). With AddressSanitizer
+                 # off the Pi, so an out-of-range pixel write fails the run
 make             # on the Pi: builds the library and ./ledengine
 make sim         # Mac/Linux dev: build/ledengine-sim, same engine with a stub matrix
                  # (brew install yaml-cpp nlohmann-json); --dump out.ppm saves the output frame
@@ -84,11 +94,13 @@ Patterns:
 | `rows` | one lit row walking down | dead address lines (A-E) |
 | `cols` | one lit column walking right | shift-register / data faults |
 
-The engine reads `$LEDPOSTER_DATA/config.yaml` and `$LEDPOSTER_DATA/media` (`LEDPOSTER_DATA` defaults to `/data`). `--play MEDIA_ID` loops one cached item; `--playlist NAME` plays a playlist from the config's `playlists:` section (per-item `duration_s`, `loop`, `shuffle`).
+The engine reads `$LEDPOSTER_DATA/config.yaml` and `$LEDPOSTER_DATA/media` (`LEDPOSTER_DATA` defaults to `/data`). `--play MEDIA_ID` loops one cached item; `--playlist NAME` plays a playlist from the config's `playlists:` section (per-item `duration_s`, `loop`, `shuffle`). `--effect NAME` starts an effect with its default settings (`spider-sense`, `web-shot`, `uav-radar`, `plasma`, `fire`, `starfield`), `--mode clock` or `--mode idle` the clock or idle screen, `--text "Hello"` the text scroller.
+
+Text, the clock and on-wall messages use the BDF fonts that come with rpi-rgb-led-matrix (`vendor/rpi-rgb-led-matrix/fonts`), parsed by that library's own font code. The engine loads them at start from the checkout it was built in; set `fonts.dir` if the fonts live elsewhere. The clock uses the Pi's time zone (`sudo raspi-config nonint do_change_timezone Europe/London`, then restart the engine). The idle screen is a dark, slow blue plasma with a dim clock: something for "on, but nobody is watching", which the schedule (web app) can switch to.
 
 The engine prints its estimated current draw and output brightness once a second, plus `(limited)` when the limiter is turning the frame down. Full white on six panels is about 36A unlimited, so the limiter holds it at `power.ceiling_amps` (13A): output brightness 36%, 12.96A.
 
-The flags only pick the starting mode. While it runs, the engine listens on `engine.socket` for commands (`status`, `set_brightness`, `set_auto_brightness`, `power`, `set_mode`, `reload_config`) and streams its output on `engine.preview_socket`; both are in [docs/protocol.md](docs/protocol.md). From a shell, with `socat`:
+The flags only pick the starting mode. While it runs, the engine listens on `engine.socket` for commands (`status`, `set_brightness`, `set_auto_brightness`, `power`, `set_mode`, `list_modes`, `overlay`, `show_text`, `ack_wifi_setup`, `reload_config`) and streams its output on `engine.preview_socket`; both are in [docs/protocol.md](docs/protocol.md). From a shell, with `socat`:
 
 ```sh
 echo '{"id":1,"cmd":"status"}' | sudo socat - UNIX-CONNECT:/run/ledposter/engine.sock
@@ -267,6 +279,51 @@ On your phone (same Wi-Fi) open `http://<pi-ip>:8080/` and check:
 
 Report: the transcode time for your biggest video, whether the preview keeps up with the panel (it should be within about 200ms), and anything that looked wrong on your phone's screen size.
 
+## Testing milestone 5 on the Pi
+
+Wire the button as in [Wiring assumptions](#wiring-assumptions) (GPIO25 pin 22, GND pin 20). Pull, build and test:
+
+```sh
+cd ~/ledposter && git pull && git submodule update --init
+cd engine && make test && make && make sim
+cd ../web && .venv/bin/python -m pytest -q
+```
+
+Expected: `all engine tests passed`, and pytest passes everything (the engine socket tests now also cover `list_modes`, every new mode, overlays, `show_text` and the simulated button).
+
+Add the new `button:` section to the data dir config (copy it from `config/single-panel.yaml`, or copy the whole file again and redo your edits), then start the engine on the one wired panel:
+
+```sh
+export LEDPOSTER_DATA=~/lpdata
+cd ~/ledposter/engine && sudo -E ./ledengine --effect plasma
+```
+
+Expected log: `button: GPIO25 on /dev/gpiochip0`, no `fonts: ... missing` line. In a second terminal, with the `ctl` helper from milestone 3:
+
+```sh
+ctl() { echo "$1" | sudo socat - UNIX-CONNECT:/run/ledposter/engine.sock | jq -c .; }
+```
+
+Things to check and report:
+
+1. **Effects**: each of these for ~20s; the panel shows the effect, `status` shows `"fps"` close to 30 (report it per effect, and `top -H -p $(pgrep ledengine)` CPU for fire and plasma):
+   ```sh
+   for e in spider-sense web-shot uav-radar plasma fire starfield; do
+     ctl "{\"cmd\":\"set_mode\",\"mode\":\"effect\",\"effect\":\"$e\"}"; sleep 20
+     ctl '{"cmd":"status"}' | jq -c '[.mode_name, .fps, .amps]'
+   done
+   ```
+   Spider-sense: red/blue ring shockwaves from random points. Web-shot: a white line shoots in, strands burst out, a web is spun, fades, repeats every 6s. UAV radar: green sweep with a fading trail, red blips lighting up as it passes. Plasma: flowing pink/blue/cyan blobs. Fire: flames from the bottom edge. Starfield: stars flying out from the middle. Report anything that looks wrong, too dim, or flickers.
+2. **Settings**: `ctl '{"cmd":"set_mode","mode":"effect","effect":"fire","settings":{"speed":3,"height":0.9,"colors":["0000ff","00ffff","ffffff"]}}'` gives tall, fast blue fire. `{"cmd":"set_mode","mode":"effect","effect":"fire","settings":{"speed":9}}` answers `'speed' must be a number from 0.1 to 5` and changes nothing.
+3. **Clock**: `ctl '{"cmd":"set_mode","mode":"clock","settings":{"hour24":false,"date":true,"color":"ff8000"}}'` shows the local time in orange with AM/PM and the date; check it matches `date` on the Pi.
+4. **Text**: `ctl '{"cmd":"set_mode","mode":"text","text":"Hello from the LED wall!","color":"00ff00","speed":1.5}'` scrolls right to left, smoothly, and starts again after it leaves.
+5. **Idle**: `ctl '{"cmd":"set_mode","mode":"idle"}'`: a dark blue slowly moving background with a dim clock. Report whether it is too dim or too bright in your room (`settings: {"level": 0.6}` to compare).
+6. **Overlays**: on top of any mode, `ctl '{"cmd":"overlay","event":"kill"}'` (also `killstreak`, `death`, `win`): a 1.5 to 3s animation, then the mode shows as before. `ctl '{"cmd":"show_text","text":"192.168.1.50","seconds":10}'` shows the text in a band for 10s. With `set_mode` pattern `solid` `ffffff` and `ceiling_amps: 3.0` as in milestone 3, an overlay never pushes `amps` over 3.
+7. **Button**: short presses step through `button.cycle` (plasma, fire, spider-sense, web-shot, radar, starfield, clock; the `demo` playlist goes item by item; then idle). Hold 2 to 10s and let go: the display goes off; again: back on. Hold 10s: "Wi-Fi setup" appears while you are still holding, and `ctl '{"cmd":"status"}' | jq -c '[.wifi_setup_requested, .wifi_setup_count]'` shows `[true,1]`. The log prints `button: short press` etc. for each. Report any missed or double presses.
+8. **List**: `ctl '{"cmd":"list_modes"}' | jq '.modes[].mode'` lists all modes; `jq '.modes[] | select(.effect=="plasma")'` shows the plasma settings schema.
+
+With all six panels, use `config.example.yaml`; the effects fill the 128x192 canvas.
+
 ## Troubleshooting
 
 - **Blank panel with `adafruit-hat-pwm`**: the GPIO4 to GPIO18 mod isn't there. Use `adafruit-hat`.
@@ -285,4 +342,8 @@ Report: the transcode time for your biggest video, whether the preview keeps up 
 - **Wall too dim at night / too bright by day**: tune `brightness.auto_curve` (`min_pct`, `lux_low`, `lux_high`) and `reload_config`.
 - **`control socket off: ... Permission denied`**: the engine can't create `/run/ledposter`. Run it with `sudo`, or point `engine.socket` and `engine.preview_socket` at a writable path for dev.
 - **`another engine is already listening here`**: an engine is still running (`pgrep -a ledengine`); stop it first.
+- **`button: /dev/gpiochip0: ...` or `button: GPIO25 ...: Device or resource busy`**: another program holds the line (`gpioinfo` from `gpiod` shows the owner), or `button.gpio` is a pin the matrix uses. Pick a free pin (Wiring assumptions). `status` shows `"button": "missing"`; the wall keeps running.
+- **Button does nothing**: check the log for `button: GPIO25 on /dev/gpiochip0` at start. With `gpiod` installed, `gpioget gpiochip0 25` (engine stopped) reads 1 released and 0 pressed. Phantom presses: longer or untwisted wires picking up noise; raise `debounce_ms`.
+- **`fonts: N of 6 missing in ...`**: the vendor submodule isn't checked out (`git submodule update --init`) or `fonts.dir` is wrong. Without fonts, text and clock modes can't be set and overlays show no words.
+- **Clock shows the wrong time**: set the time zone (`sudo raspi-config nonint do_change_timezone ...`) and restart the engine; check `timedatectl` shows NTP synchronized.
 - **`socat: ... Permission denied` from a client**: the sockets are mode 660, owned by whoever runs the engine. Use `sudo` for now (the systemd setup in milestone 8 gives the web app its group).

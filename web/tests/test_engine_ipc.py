@@ -108,10 +108,10 @@ def amps_of(data):
 
 
 class Engine:
-    def __init__(self, *args, user=100):
+    def __init__(self, *args, user=100, extra=""):
         self.dir = Path(tempfile.mkdtemp(prefix="lpipc", dir="/tmp"))  # short: socket paths max ~104 chars
         self.ctl_path, self.prev_path = self.dir / "engine.sock", self.dir / "frames.sock"
-        self.write_config(user=user)
+        self.write_config(user=user, extra=extra)
         self.make_media("grey", [(100, 100, 100), (150, 150, 150)])
         self.log = open(self.dir / "engine.log", "wb")
         self.proc = subprocess.Popen([str(ENGINE), *args], stderr=self.log,
@@ -165,7 +165,7 @@ def engine():
 def test_full_white_is_limited(engine):
     e = engine("--pattern", "solid", "--color", "000000")
     assert e.ctl.ok("set_mode", mode="pattern", pattern="solid", color="ffffff") == {
-        "id": 1, "ok": True, "mode": "pattern", "mode_name": "solid"}
+        "id": 1, "ok": True, "mode": "pattern", "mode_name": "solid", "settings": {}}
     st = e.ctl.wait(lambda s: s["limited"])
     assert st["amps"] <= CEILING and st["amps"] > CEILING - 0.5
     assert st["amps_unlimited"] == pytest.approx(36.0, abs=0.01)
@@ -268,7 +268,7 @@ def test_errors(engine):
         ("set_mode", {"mode": "media", "media": "missing"}, "no meta.json"),
         ("set_mode", {"mode": "media", "media": "../etc"}, "bad media id"),
         ("set_mode", {"mode": "playlist", "playlist": "nope"}, "no playlist 'nope'"),
-        ("set_mode", {"mode": "dance"}, "mode must be pattern, media or playlist"),
+        ("set_mode", {"mode": "dance"}, "mode must be pattern, media, playlist, effect, clock, text or idle"),
         ("set_fake_lux", {"lux": -1}, "'lux' must be a number"),
     ]:
         r = e.ctl(cmd, **args)
@@ -346,3 +346,227 @@ def test_killed_client_does_not_kill_engine(engine):
     ctl2 = Control(e.ctl_path)  # new clients still welcome
     ctl2.ok("status")
     ctl2.sock.close()
+
+
+# ---- milestone 5: generative modes, clock, text, overlays, button ----
+
+EFFECTS = ["spider-sense", "web-shot", "uav-radar", "plasma", "fire", "starfield"]
+
+BUTTON = """\
+button:
+  gpio: 25
+  debounce_ms: 20
+  long_ms: 400
+  very_long_ms: 1000
+  cycle:
+    - {mode: effect, effect: plasma, settings: {speed: 2, colors: ["ff0000", "0000ff"]}}
+    - {mode: clock, hour24: false}
+    - {mode: playlist, playlist: three}
+    - {mode: playlist, playlist: missing}
+"""
+
+THREE = """\
+  three:
+    items:
+      - {media: red, duration_s: 60}
+      - {media: green, duration_s: 60}
+      - {media: blue, duration_s: 60}
+"""
+
+
+def frame_now(e):
+    with preview_conn(e.prev_path) as s:
+        return read_preview(s.makefile("rb"))
+
+
+def test_list_modes(engine):
+    e = engine()
+    r = e.ctl.ok("list_modes")
+    assert r["events"] == ["kill", "killstreak", "death", "win"]
+    assert "10x20" in r["fonts"] and "tom-thumb" in r["fonts"]
+    modes = {(m["mode"], m.get("effect")): m for m in r["modes"]}
+    assert set(modes) == {("pattern", None), ("media", None), ("playlist", None), ("clock", None),
+                          ("text", None), ("idle", None)} | {("effect", x) for x in EFFECTS}
+    for m in r["modes"]:
+        assert m["label"] and isinstance(m["settings"], list)
+        for s in m["settings"]:
+            assert s["type"] in {"number", "int", "bool", "color", "colors", "string", "choice"}
+            assert "default" in s
+            if s["type"] in ("number", "int", "colors"):
+                assert s["min"] <= s["max"]
+            if s["type"] == "choice":
+                assert s["default"] in s["choices"]
+    for x in EFFECTS:
+        st = {s["name"]: s for s in modes[("effect", x)]["settings"]}
+        assert st["speed"] == {"name": "speed", "type": "number", "min": 0.1, "max": 5, "default": 1.0,
+                               "help": "animation speed, 1 = normal"}
+        assert st["colors"]["type"] == "colors" and len(st["colors"]["default"]) >= 1
+    text = {s["name"]: s for s in modes[("text", None)]["settings"]}
+    assert set(text) == {"text", "color", "background", "speed", "font", "scale"}
+    assert text["font"]["choices"] == r["fonts"]
+    assert {s["name"] for s in modes[("clock", None)]["settings"]} == {"hour24", "seconds", "date", "color"}
+    assert modes[("playlist", None)]["settings"][0]["choices"] == ["two"]
+    assert modes[("pattern", None)]["settings"][0]["choices"] == ["panel-id", "solid", "cycle", "rows", "cols"]
+
+
+def test_set_mode_new_modes(engine):
+    e = engine()
+    for x in EFFECTS:
+        r = e.ctl.ok("set_mode", mode="effect", effect=x, settings={"speed": 2.5})
+        assert (r["mode"], r["mode_name"], r["settings"]["speed"]) == ("effect", x, 2.5)
+        st = e.ctl.wait(lambda s: s["mode_name"] == x)
+        assert st["mode"] == "effect" and st["mode_settings"]["speed"] == 2.5
+        assert st["mode_settings"]["colors"]
+        _, data = frame_now(e)
+        assert any(data), x  # something on screen
+    r = e.ctl.ok("set_mode", mode="effect", effect="plasma", colors=["#FF0000", "00ff00"], scale=2)
+    assert r["settings"] == {"speed": 1.0, "colors": ["ff0000", "00ff00"], "scale": 2.0}
+
+    r = e.ctl.ok("set_mode", mode="clock", settings={"hour24": False, "date": True, "color": "ff8000"})
+    assert (r["mode"], r["mode_name"]) == ("clock", "clock")
+    st = e.ctl.wait(lambda s: s["mode"] == "clock")
+    assert st["mode_settings"] == {"hour24": False, "seconds": False, "date": True, "color": "ff8000"}
+    _, data = frame_now(e)
+    assert any(data[0::3]) and not any(data[2::3])  # orange digits: red, no blue
+
+    r = e.ctl.ok("set_mode", mode="text", text="Hello wall", color="00ff00", background="000040", speed=3)
+    assert r["settings"]["text"] == "Hello wall" and r["settings"]["speed"] == 3
+    st = e.ctl.wait(lambda s: s["mode"] == "text")
+    assert st["mode_settings"]["background"] == "000040"
+    _, data = frame_now(e)
+    assert data[0:3] == bytes([0, 0, 12])  # corner: the background, 0x40 through gamma 2.2
+
+    assert e.ctl.ok("set_mode", mode="idle")["mode"] == "idle"
+    st = e.ctl.wait(lambda s: s["mode"] == "idle")
+    assert st["mode_settings"]["clock"] is True
+
+    for args, msg in [
+        ({"mode": "effect", "effect": "lava"}, "unknown effect 'lava' (spider-sense, web-shot"),
+        ({"mode": "effect"}, "missing field 'effect'"),
+        ({"mode": "effect", "effect": "fire", "settings": {"speed": 6}}, "'speed' must be a number from 0.1 to 5"),
+        ({"mode": "effect", "effect": "fire", "settings": {"sped": 1}}, "unknown setting 'sped'"),
+        ({"mode": "effect", "effect": "fire", "colors": []}, "'colors' must be a list of 1 to 6"),
+        ({"mode": "clock", "hour24": "yes"}, "'hour24' must be true or false"),
+        ({"mode": "text", "text": "x" * 501}, "'text' must be a string of at most 500 bytes"),
+        ({"mode": "text", "font": "comic"}, "'font' must be one of"),
+    ]:
+        r = e.ctl("set_mode", **args)
+        assert r["ok"] is False and msg in r["error"], (args, r)
+    assert e.ctl.ok("status")["mode"] == "idle"  # nothing applied
+
+
+def test_overlay_and_show_text_expire(engine):
+    e = engine("--pattern", "solid", "--color", "000000")
+    assert e.ctl.ok("overlay", event="kill")["ms"] == 1500
+    t0 = time.monotonic()
+    st = e.ctl.wait(lambda s: s["overlays"] == ["kill"])
+    assert st["mode"] == "pattern" and st["mode_name"] == "solid"  # the mode keeps running
+    time.sleep(0.3)
+    _, data = frame_now(e)
+    assert any(data)  # drawn on top of black
+    e.ctl.wait(lambda s: s["overlays"] == [], timeout=3)
+    assert 1.4 < time.monotonic() - t0 < 2.2
+    _, data = frame_now(e)
+    assert not any(data)  # gone
+
+    for ev, ms in [("killstreak", 2500), ("death", 2000), ("win", 3000)]:
+        assert e.ctl.ok("overlay", event=ev)["ms"] == ms
+        e.ctl.wait(lambda s: s["overlays"] == [ev])
+    r = e.ctl("overlay", event="headshot")
+    assert r["ok"] is False and "unknown event 'headshot' (kill, killstreak, death, win)" in r["error"]
+
+    assert e.ctl.ok("show_text", text="10.0.0.42", seconds=0.6)["ms"] == 600
+    e.ctl.wait(lambda s: "text" in s["overlays"])
+    e.ctl.wait(lambda s: "text" not in s["overlays"], timeout=2)
+    e.ctl.ok("show_text", text="Wi-Fi setup", seconds=60, color="00ff00")
+    e.ctl.wait(lambda s: "text" in s["overlays"])
+    e.ctl.ok("show_text", text="")  # clears
+    e.ctl.wait(lambda s: "text" not in s["overlays"])
+    for args, msg in [({"text": 3}, "'text' must be a string"),
+                      ({"text": "x", "seconds": 0}, "'seconds' must be a number from 0.5"),
+                      ({}, "missing field 'text'")]:
+        r = e.ctl("show_text", **args)
+        assert r["ok"] is False and msg in r["error"], (args, r)
+
+
+def test_limiter_holds_with_overlays(engine):
+    e = engine("--pattern", "solid", "--color", "ffffff")
+    e.ctl.ok("overlay", event="win")
+    e.ctl.ok("show_text", text="still under the ceiling", seconds=5)
+    e.ctl.wait(lambda s: s["overlays"] == ["win", "text"])
+    for _ in range(10):
+        st = e.ctl.ok("status")
+        assert st["limited"] and st["amps"] <= CEILING
+        pst, data = frame_now(e)
+        assert pst["overlays"] and pst["amps"] <= CEILING and amps_of(data) <= CEILING
+        time.sleep(0.1)
+
+
+def test_sim_button(engine):
+    e = engine(extra=BUTTON)
+    e.write_config(user=100, extra=BUTTON)  # the playlist below goes under playlists:
+    cfg = (e.dir / "config.yaml").read_text()
+    (e.dir / "config.yaml").write_text(cfg.replace("playlists:\n", "playlists:\n" + THREE))
+    assert e.ctl.ok("reload_config")["restart_needed"] == []
+    for media, c in [("red", (200, 0, 0)), ("green", (0, 200, 0)), ("blue", (0, 0, 200))]:
+        e.make_media(media, [c])
+    assert e.ctl.ok("status")["button"] == "sim"
+
+    def press(ms):
+        e.ctl.ok("sim_button", ms=ms)
+
+    press(60)  # short: first cycle entry
+    st = e.ctl.wait(lambda s: s["mode"] == "effect")
+    assert st["mode_name"] == "plasma" and st["mode_settings"]["colors"] == ["ff0000", "0000ff"]
+    press(60)
+    st = e.ctl.wait(lambda s: s["mode"] == "clock")
+    assert st["mode_settings"]["hour24"] is False
+
+    press(60)  # the playlist: short presses step through its items
+    e.ctl.wait(lambda s: s["mode"] == "playlist" and s["mode_name"] == "three")
+    colours = []
+    for i in range(3):
+        if i:
+            press(60)
+            time.sleep(0.3)
+        _, data = frame_now(e)
+        colours.append(tuple(data[:3]))
+    assert [c.index(max(c)) for c in colours] == [0, 1, 2]  # red, green, blue
+    press(60)  # past the last item; the next entry is broken (no such playlist): wraps to plasma
+    st = e.ctl.wait(lambda s: s["mode"] == "effect")
+    assert "button.cycle[3]: no playlist 'missing'" in e.logtext()
+
+    press(600)  # long: display off, the mode keeps running
+    st = e.ctl.wait(lambda s: not s["power"])
+    assert st["mode"] == "effect" and st["amps"] == 0
+    press(600)
+    e.ctl.wait(lambda s: s["power"])
+
+    assert e.ctl.ok("status")["wifi_setup_requested"] is False
+    press(1300)  # very long: asks for Wi-Fi setup (networking is milestone 6)
+    st = e.ctl.wait(lambda s: s["wifi_setup_requested"])
+    assert st["wifi_setup_count"] == 1 and abs(st["wifi_setup_at"] - time.time()) < 5
+    assert "text" in st["overlays"] and st["power"]  # "Wi-Fi setup" on the wall
+    time.sleep(0.5)  # the release after a very long press does nothing
+    st = e.ctl.ok("status")
+    assert st["power"] and st["mode"] == "effect"
+    e.ctl.ok("ack_wifi_setup")
+    st = e.ctl.wait(lambda s: not s["wifi_setup_requested"])
+    assert st["wifi_setup_count"] == 1
+
+    r = e.ctl("sim_button", ms=0)
+    assert r["ok"] is False and "'ms' must be a number from 1 to 60000" in r["error"]
+
+
+def test_sim_button_off_without_gpio(engine):
+    e = engine()
+    assert e.ctl.ok("status")["button"] == "off"
+    r = e.ctl("sim_button", ms=100)
+    assert r["ok"] is False and "the button is off" in r["error"]
+
+
+def test_start_flags(engine):
+    assert engine("--effect", "fire").ctl.ok("status")["mode_name"] == "fire"
+    assert engine("--mode", "clock").ctl.ok("status")["mode"] == "clock"
+    st = engine("--text", "hi there").ctl.ok("status")
+    assert st["mode"] == "text" and st["mode_settings"]["text"] == "hi there"

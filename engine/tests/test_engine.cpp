@@ -9,6 +9,7 @@
 #include "ipc.h"
 #include "media.h"
 #include "patterns.h"
+#include "test_m5.h"
 
 static const std::vector<Panel> kSnake = {{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 2}, {1, 2}};
 
@@ -228,6 +229,7 @@ int main(int argc, char **argv) {
   test_media();
   test_brightness();
   test_ipc();
+  test_m5();
 
   if (argc > 1) {
     draw_pattern("panel-id", f, L, 0, 0);

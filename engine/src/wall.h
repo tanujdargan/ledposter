@@ -137,9 +137,11 @@ inline std::array<uint8_t, 256> gamma_lut(double gamma) {
 
 // A mode draws the whole canvas for t_ms (time since the mode started) and
 // returns the t_ms at which it next needs to draw. gamma: output still needs
-// the engine's gamma LUT (false for pre-corrected media).
+// the engine's gamma LUT (false for pre-corrected media). skip (playlists
+// only): jump to the next item at t_ms; false if this is the last item.
 struct Mode {
   std::string name;
   bool gamma = true;
   std::function<int64_t(Frame &, int64_t t_ms)> render;
+  std::function<bool(int64_t t_ms)> skip = nullptr;
 };

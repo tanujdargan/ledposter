@@ -41,9 +41,14 @@ Commands take effect from the next frame (within about 100ms). A `status` sent r
 | `set_brightness` | `value`: number 0 to 100 (rounded to an integer percent) | none |
 | `set_auto_brightness` | `enabled`: bool | none |
 | `power` | `on`: bool | none |
-| `set_mode` | see below | `mode`, `mode_name` |
+| `set_mode` | see below | `mode`, `mode_name`, `settings` |
+| `list_modes` | none | `modes`, `events`, `fonts`: see [Modes and settings](#modes-and-settings) |
+| `overlay` | `event`: `kill`, `killstreak`, `death` or `win` | `ms`: how long it shows |
+| `show_text` | `text`: string (max 500 bytes, `""` clears), `seconds`: 0.5 to 86400 (default 5), `color` (optional, default white) | `ms` |
+| `ack_wifi_setup` | none | none |
 | `reload_config` | none | `restart_needed`: list of section names |
 | `set_fake_lux` | `lux`: number >= 0, or `null` | none (simulator build only) |
+| `sim_button` | `ms`: 1 to 60000 | none (simulator build only) |
 
 **`set_brightness`** sets the user brightness (the slider). It lasts until the engine restarts or `reload_config` runs; the web app persists it by writing `brightness.user` to the config.
 
@@ -59,21 +64,107 @@ Commands take effect from the next frame (within about 100ms). A `status` sent r
 {"id": 5, "cmd": "set_mode", "mode": "playlist", "playlist": "demo"}
 ```
 
+```json
+{"id": 6, "cmd": "set_mode", "mode": "effect", "effect": "plasma", "settings": {"speed": 2, "colors": ["ff0060", "4000ff"]}}
+{"id": 7, "cmd": "set_mode", "mode": "clock", "settings": {"hour24": false, "date": true}}
+{"id": 8, "cmd": "set_mode", "mode": "text", "text": "Hello!", "color": "00ff00"}
+{"id": 9, "cmd": "set_mode", "mode": "idle"}
+```
+
 - `pattern`: `panel-id`, `solid`, `cycle`, `rows` or `cols`. `color` is optional: `"RRGGBB"`, `"#RRGGBB"` or an integer `0xRRGGBB` (default white).
 - `media`: a media id, i.e. a folder in `$LEDPOSTER_DATA/media` with `meta.json` and `frames.rgb`. It loops. It fails if the item isn't transcoded or was made for another canvas size.
 - `playlist`: a name under `playlists:` in the config as loaded (at start or by the last `reload_config`).
+- `effect`: `effect` is one of `spider-sense`, `web-shot`, `uav-radar`, `plasma`, `fire`, `starfield`.
+- `clock`, `text`, `idle`: no extra field.
 
-The response echoes `mode` and `mode_name` (pattern name, media id or playlist name).
+Settings: every mode has the settings `list_modes` reports. They go in a `settings` object, or as top-level fields with the same names (`"text": "Hello!"` above), which win over `settings`. Missing settings take their defaults. An unknown name inside `settings`, or a value of the wrong type or out of range, is an error and nothing changes (`'speed' must be a number from 0.1 to 5`). Colors are accepted as `"RRGGBB"`, `"#RRGGBB"` or an integer and always reported as lowercase `"rrggbb"`.
+
+The response echoes `mode`, `mode_name` (pattern name, media id, playlist name, effect id, or `clock`/`text`/`idle`) and `settings`: the resolved settings with defaults filled in (empty for pattern, media and playlist).
+
+**`list_modes`** describes every mode and its settings, so a mode picker can be generated from it. See [Modes and settings](#modes-and-settings).
+
+**`overlay`** plays a short animation on top of whatever is showing (the game hook events). The mode keeps running underneath; after `ms` the overlay is gone. A new event replaces the one playing. The limiter applies to the frame with the overlay on it.
+
+| event | ms | shows |
+|---|---|---|
+| `kill` | 1500 | white hit marker, then "KILL" in red |
+| `killstreak` | 2500 | gold shockwave rings, blinking "KILLSTREAK" |
+| `death` | 2000 | red vignette pulsing in from the edges, "DOWN" |
+| `win` | 3000 | confetti bursting from the bottom corners, "VICTORY" |
+
+**`show_text`** shows a message in a dark band across the middle of the wall for `seconds`, on top of the mode and any event overlay. It picks the biggest font that fits, word-wraps, and only breaks words that fit no other way. A new `show_text` replaces the current one; `"text": ""` removes it. Meant for the IP at boot and Wi-Fi setup status (milestone 6).
+
+**`ack_wifi_setup`** clears `wifi_setup_requested` in the status (see [Button](#button)). `wifi_setup_count` keeps counting.
 
 **`reload_config`** re-reads the config file and applies what can change live: power ceiling and calibration, gamma, brightness settings (user, auto, curve, smoothing), `engine.preview_fps` and the playlists. If the running mode is a playlist, it restarts with the new definition. The file is checked first; if it is invalid (bad YAML, a value out of range, the running playlist removed or broken), the response is an error and the old settings stay.
 
-`restart_needed` lists the sections that changed but only take effect after an engine restart: `matrix` (anything about the panels), `sensors`, `engine` (socket paths). Empty list: everything was applied.
+`restart_needed` lists the sections that changed but only take effect after an engine restart: `matrix` (anything about the panels), `sensors`, `engine` (socket paths), `button` (pin, chip, timings; `button.cycle` and `button.skip_playlist_items` are live), `fonts`. Empty list: everything was applied.
 
 ```json
 {"id": 6, "ok": true, "restart_needed": ["matrix"]}
 ```
 
 **`set_fake_lux`** (simulator build only; the Pi build answers with an error) stands in for the BH1750 so the auto brightness curve can be tested without hardware. `null` means "no sensor". The value is read by the same polling and smoothing as a real sensor, within one `sensors.bh1750.poll_ms`.
+
+**`sim_button`** (simulator build only) holds the button down for `ms`, as if a finger were on it. It goes through the same 5ms polling, debounce and press classification as the real GPIO, so `{"ms": 100}` is a short press, `{"ms": 2500}` a long one (with the default `button.long_ms`). Needs `button.gpio` set in the config; otherwise the button is `off` and this is an error.
+
+### Modes and settings
+
+`list_modes` answers:
+
+```json
+{"id": 1, "ok": true,
+ "modes": [
+  {"mode": "pattern", "label": "Test pattern", "help": "panel test patterns", "settings": [
+    {"name": "pattern", "type": "choice", "choices": ["panel-id", "solid", "cycle", "rows", "cols"], "default": "panel-id"},
+    {"name": "color", "type": "color", "default": "ffffff", "help": "for solid, rows and cols"}]},
+  {"mode": "media", ...}, {"mode": "playlist", ...},
+  {"mode": "effect", "effect": "plasma", "label": "Plasma", "help": "flowing sine plasma; colors form a looping palette", "settings": [
+    {"name": "speed", "type": "number", "min": 0.1, "max": 5, "default": 1.0, "help": "animation speed, 1 = normal"},
+    {"name": "colors", "type": "colors", "min": 1, "max": 6, "default": ["ff0060", "4000ff", "00c0ff", "ff00c0"]},
+    {"name": "scale", "type": "number", "min": 0.25, "max": 4, "default": 1.0, "help": "pattern size, higher = smaller waves"}]},
+  ...],
+ "events": ["kill", "killstreak", "death", "win"],
+ "fonts": ["tom-thumb", "5x8", "6x10", "7x13B", "9x18B", "10x20"]}
+```
+
+Each mode has `mode` (what `set_mode` takes), `effect` (effects only), `label`, `help` and `settings`. Each setting has `name`, `type`, `default`, maybe `help`, and by type:
+
+| type | value | extra fields |
+|---|---|---|
+| `number` | number | `min`, `max` |
+| `int` | whole number | `min`, `max` |
+| `bool` | `true`/`false` | |
+| `color` | `"rrggbb"` | |
+| `colors` | list of `"rrggbb"` | `min`, `max`: how many |
+| `string` | string | `max`: bytes |
+| `choice` | one of `choices` | `choices` |
+
+`media` takes a media id (`string`); the web app knows the library. `playlist` choices are the playlists in the config as loaded.
+
+The engine-drawn modes, with their settings besides `speed` (0.1 to 5, default 1, all effects and text) and `colors`:
+
+| mode | settings | default colors |
+|---|---|---|
+| effect `spider-sense` | `count` 1-8 (3): ripples at once. Three rings per ripple, alternating through colors | `ff1010`, `1040ff` |
+| effect `web-shot` | `strands` 5-16 (10), `rings` 2-12 (7). Colors: web, glow (max 2). A 6s cycle: shot, strands, spinning rings, hold, fade | `ffffff`, `8fc8ff` |
+| effect `uav-radar` | `blips` 0-16 (6). Colors: sweep, blips (max 2). One turn per 3s | `00ff50`, `ff2020` |
+| effect `plasma` | `scale` 0.25-4 (1). Colors loop as a palette | `ff0060`, `4000ff`, `00c0ff`, `ff00c0` |
+| effect `fire` | `height` 0.2-1 (0.55): flame height as a fraction of the canvas. Colors run cool to hot after black | `b00000`, `ff5000`, `ffb000`, `ffff90` |
+| effect `starfield` | `density` 0.2-3 (1): 1 = a star per 100 pixels. Each star takes one of the colors | `ffffff`, `a0c0ff`, `ffe0a0` |
+| `clock` | `hour24` (true), `seconds` (false), `date` (false), `color` (`ffffff`). The Pi's local time zone | |
+| `text` | `text` (max 500 bytes, `Hello!`), `color` (`ffffff`), `background` (`000000`), `font` (one of `fonts`, `10x20`), `scale` 1-4 (2 on the wall, 1 on one panel). speed 1 = 30 pixels a second | |
+| `idle` | `clock` (true), `hour24` (true), `level` 0.05-1 (0.35): a dark, slow blue plasma with a dim clock | |
+
+Same seed, same pictures: effects take their randomness from a seed (random per `set_mode`), so they never repeat exactly but each one is deterministic in tests.
+
+### Button
+
+One push button on a GPIO (`button:` in the config, README has the wiring). The engine polls it every 5ms; a level counts once it held for `debounce_ms`.
+
+- **Short press** (released before `long_ms`, default 2s): if a playlist is playing (and `button.skip_playlist_items` is true, the default), its next item; after its last item, or in any other mode, the next entry of `button.cycle`. The cycle continues after the last entry the button picked, even if the web app changed the mode since; an entry that fails (a missing playlist, say) is logged and skipped.
+- **Long press** (released between `long_ms` and `very_long_ms`): display on/off, like `power`.
+- **Very long press** (held for `very_long_ms`, default 10s; fires while still held, the release does nothing): `wifi_setup_requested` becomes true, `wifi_setup_count` goes up by one, `wifi_setup_at` is set, the display turns on and shows "Wi-Fi setup" for 4s. Networking (milestone 6) watches these and clears the flag with `ack_wifi_setup`.
 
 ### Status
 
@@ -84,13 +175,21 @@ The response echoes `mode` and `mode_name` (pattern name, media id or playlist n
  "amps": 12.96, "amps_unlimited": 36.0, "limited": true, "ceiling_amps": 13.0,
  "brightness": {"user": 100, "auto": 64.7, "auto_enabled": true, "effective": 65, "output": 36},
  "lux": 50.0, "sensor": "ok",
- "power": true, "w": 128, "h": 192, "uptime_s": 312}
+ "power": true, "w": 128, "h": 192, "uptime_s": 312,
+ "mode_settings": {}, "overlays": [], "button": "ok",
+ "wifi_setup_requested": false, "wifi_setup_count": 0, "wifi_setup_at": null}
 ```
 
 | field | meaning |
 |---|---|
-| `mode` | `pattern`, `media` or `playlist` |
-| `mode_name` | pattern name, media id or playlist name |
+| `mode` | `pattern`, `media`, `playlist`, `effect`, `clock`, `text` or `idle` |
+| `mode_name` | pattern name, media id, playlist name, effect id, or `clock`/`text`/`idle` |
+| `mode_settings` | the running mode's resolved settings (empty for pattern, media and playlist) |
+| `overlays` | what is drawn on top right now: `[]`, or the event name and/or `"text"`, e.g. `["kill", "text"]` |
+| `button` | `ok` (GPIO line open), `missing` (configured but it could not be opened; see the log), `off` (no `button.gpio`), `sim` (simulator) |
+| `wifi_setup_requested` | true after a very long button press, until `ack_wifi_setup` |
+| `wifi_setup_count` | very long presses since the engine started |
+| `wifi_setup_at` | unix time of the last one, or `null` |
 | `fps` | frames output per second, measured over the last second. The engine only redraws when the picture changes (and at least 10 times a second), so a still image shows about 10 |
 | `amps` | estimated panel current of the last frame, after the limiter. Never above `ceiling_amps` |
 | `amps_unlimited` | what the frame would draw at `brightness.effective` without the limiter |

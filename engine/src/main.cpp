@@ -1,8 +1,10 @@
 // ledengine: owns the LED matrix and runs the frame loop.
-// Plays cached media and playlists (media.h) and the test patterns. Every
-// frame goes through the brightness chain: min(user, BH1750 auto), then the
-// limiter. The control and preview sockets (ipc.h, docs/protocol.md) let the
-// web app drive it and watch the output.
+// Plays cached media and playlists (media.h), the test patterns, generative
+// effects (effects.h), clock, idle and text (text.h, catalog.h), with overlays
+// (overlay.h) on top. Every frame goes through the brightness chain:
+// min(user, BH1750 auto), then the limiter. The control and preview sockets
+// (ipc.h, docs/protocol.md) let the web app drive it and watch the output; the
+// push button (button.h) cycles modes, toggles power and asks for Wi-Fi setup.
 // Built with -DLEDPOSTER_SIM (make sim) it runs without the matrix library or I2C.
 #include <yaml-cpp/yaml.h>
 
@@ -10,16 +12,25 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <thread>
 
 #include "bh1750.h"
+#include "button.h"
+#include "catalog.h"
 #include "ipc.h"
 #include "media.h"
+#include "overlay.h"
 #include "patterns.h"
+
+#ifndef LEDPOSTER_FONTS_DIR  // the Makefile sets it to vendor/rpi-rgb-led-matrix/fonts
+#define LEDPOSTER_FONTS_DIR "/opt/ledposter/vendor/rpi-rgb-led-matrix/fonts"
+#endif
 
 #ifndef LEDPOSTER_SIM
 #include <led-matrix.h>
@@ -101,8 +112,10 @@ static volatile std::sig_atomic_t g_stop = 0;
 static int usage() {
   fprintf(stderr,
           "usage: ledengine [--config $LEDPOSTER_DATA/config.yaml]\n"
-          "                 [--pattern P [--color RRGGBB] | --play MEDIA_ID | --playlist NAME]\n"
+          "                 [--pattern P [--color RRGGBB] | --play MEDIA_ID | --playlist NAME |\n"
+          "                  --effect E | --mode clock|idle | --text TEXT]\n"
           "  P: panel-id (default), solid, cycle, rows, cols\n"
+          "  E: spider-sense, web-shot, uav-radar, plasma, fire, starfield (default settings)\n"
           "  media is read from $LEDPOSTER_DATA/media (LEDPOSTER_DATA defaults to /data)\n"
           "  the flags set the starting mode; the control socket can change it\n"
 #ifdef LEDPOSTER_SIM
@@ -156,14 +169,27 @@ static Mode playlist_mode(const YAML::Node &cfg, const std::string &name,
 }
 
 struct ModeInfo {
-  std::string kind, name;  // pattern/media/playlist, and the pattern, media id or playlist
+  std::string kind, name;  // pattern/media/playlist/effect/clock/text/idle, and its name
+  json settings = json::object();  // resolved settings (effect/clock/text/idle)
 };
 
-// set_mode arguments (also what the CLI flags turn into) to a ready Mode.
-// Does file I/O for media, so it runs on the control thread, not the frame loop.
-static std::pair<Mode, ModeInfo> make_mode(const json &a, const YAML::Node &cfg,
-                                           const std::string &media_dir, const Layout &L) {
+static const char *kPatterns[] = {"panel-id", "solid", "cycle", "rows", "cols"};
+
+// set_mode arguments (also what the CLI flags and button.cycle turn into) to a
+// ready Mode. Does file I/O for media, so it runs on the control or button
+// thread, not the frame loop.
+static std::pair<Mode, ModeInfo> make_mode(json a, const YAML::Node &cfg,
+                                           const std::string &media_dir, const Layout &L,
+                                           const std::vector<ModeSpec> &specs) {
   const std::string kind = arg_str(a, "mode");
+  if ((kind == "pattern" || kind == "media" || kind == "playlist") && a.contains("settings")) {
+    if (!a["settings"].is_object()) throw std::runtime_error("'settings' must be an object");
+    for (auto &[k, v] : a["settings"].items()) a[k] = v;  // same as top-level fields
+  }
+  if (kind == "effect" || kind == "clock" || kind == "text" || kind == "idle") {
+    Built b = build_mode(specs, a, random_seed());
+    return {std::move(b.mode), {b.kind, b.name, b.settings}};
+  }
   if (kind == "pattern") {
     const std::string p = arg_str(a, "pattern");
     const uint32_t color = a.contains("color") ? parse_color(a["color"]) : 0xffffff;
@@ -180,7 +206,52 @@ static std::pair<Mode, ModeInfo> make_mode(const json &a, const YAML::Node &cfg,
     const std::string name = arg_str(a, "playlist");
     return {playlist_mode(cfg, name, media_dir, L), {kind, name}};
   }
-  throw std::runtime_error("mode must be pattern, media or playlist");
+  throw std::runtime_error("mode must be pattern, media, playlist, effect, clock, text or idle");
+}
+
+// list_modes: every mode with its settings schema.
+static json list_modes(const std::vector<ModeSpec> &specs, const YAML::Node &cfg,
+                       const FontSet &fonts) {
+  std::vector<std::string> pats(std::begin(kPatterns), std::end(kPatterns)), lists;
+  if (cfg["playlists"] && cfg["playlists"].IsMap())
+    for (const auto &p : cfg["playlists"]) lists.push_back(p.first.as<std::string>());
+  json modes = json::array({
+      {{"mode", "pattern"}, {"label", "Test pattern"}, {"help", "panel test patterns"},
+       {"settings", {Setting{"pattern", "choice", 0, 0, "panel-id", pats}.to_json(),
+                     Setting{"color", "color", 0, 0, "ffffff", {}, "for solid, rows and cols"}.to_json()}}},
+      {{"mode", "media"}, {"label", "Media"}, {"help", "one item from the media library, looped"},
+       {"settings", {Setting{"media", "string", 0, 200, "", {}, "media id"}.to_json()}}},
+      {{"mode", "playlist"}, {"label", "Playlist"}, {"help", "a playlist from the config"},
+       {"settings", {Setting{"playlist", "choice", 0, 0, lists.empty() ? "" : lists[0], lists}.to_json()}}},
+  });
+  for (const auto &s : specs) modes.push_back(spec_json(s));
+  return {{"modes", modes}, {"events", kEvents}, {"fonts", fonts.names()}};
+}
+
+// YAML (button.cycle entries) to JSON: quoted scalars stay strings, plain ones
+// become bools or numbers when they look like one.
+static json yaml_json(const YAML::Node &n) {
+  if (n.IsMap()) {
+    json j = json::object();
+    for (const auto &kv : n) j[kv.first.as<std::string>()] = yaml_json(kv.second);
+    return j;
+  }
+  if (n.IsSequence()) {
+    json j = json::array();
+    for (const auto &v : n) j.push_back(yaml_json(v));
+    return j;
+  }
+  if (!n.IsScalar()) return nullptr;
+  const std::string v = n.Scalar();
+  if (n.Tag() == "!") return v;
+  if (v == "true") return true;
+  if (v == "false") return false;
+  char *end = nullptr;
+  const long long i = strtoll(v.c_str(), &end, 10);
+  if (!v.empty() && *end == 0) return i;
+  const double d = strtod(v.c_str(), &end);
+  if (!v.empty() && *end == 0) return d;
+  return v;
 }
 
 // Everything reload_config can change without a restart.
@@ -229,22 +300,41 @@ struct State {
   double auto_pct = NAN, fps = 0;
   int effective = 0;
   Power out;
+  std::optional<Overlays> ov;
+  bool wifi_requested = false;  // very long button press; cleared by ack_wifi_setup
+  int wifi_count = 0;
+  double wifi_at = NAN;  // unix time of the last request
 };
 
-// A config section as text, to spot changes that need a restart.
-// engine.preview_fps is the one live setting in those sections.
+// A config section as text, to spot changes that need a restart. The live
+// settings in those sections (engine.preview_fps, button.cycle,
+// button.skip_playlist_items) are left out.
 static std::string yaml_at(const YAML::Node &cfg, const char *key) {
   const YAML::Node n = cfg[key];
   if (!n) return "";
   YAML::Node c = YAML::Clone(n);
-  if (c.IsMap()) c.remove("preview_fps");
+  if (c.IsMap())
+    for (const char *live : {"preview_fps", "cycle", "skip_playlist_items"}) c.remove(live);
   return YAML::Dump(c);
+}
+
+static PressClassifier load_button(YAML::Node b) {  // non-const: missing keys read as defaults
+  PressClassifier c;
+  c.debounce_ms = b["debounce_ms"].as<int>(30);
+  c.long_ms = b["long_ms"].as<int>(2000);
+  c.very_long_ms = b["very_long_ms"].as<int>(10000);
+  if (c.debounce_ms < 1 || c.debounce_ms > 500 || c.long_ms <= c.debounce_ms ||
+      c.very_long_ms <= c.long_ms)
+    throw std::runtime_error(
+        "button: need debounce_ms from 1 to 500, and debounce_ms < long_ms < very_long_ms");
+  return c;
 }
 
 int main(int argc, char **argv) {
   const char *env = getenv("LEDPOSTER_DATA");
   const std::string data = env && *env ? env : "/data", media_dir = data + "/media";
   std::string config_path = data + "/config.yaml", pattern = "panel-id", play, playlist, dump;
+  std::string effect, kind, text;
   uint32_t color = 0xffffff;
   if ((argc - 1) % 2) return usage();
   for (int i = 1; i < argc; i += 2) {
@@ -254,20 +344,32 @@ int main(int argc, char **argv) {
     else if (k == "--color") color = std::stoul(v, nullptr, 16);
     else if (k == "--play") play = v;
     else if (k == "--playlist") playlist = v;
+    else if (k == "--effect") effect = v;
+    else if (k == "--mode") kind = v;
+    else if (k == "--text") text = v;
 #ifdef LEDPOSTER_SIM
     else if (k == "--dump") dump = v;
 #endif
     else return usage();
   }
-  if (!play.empty() && !playlist.empty()) return usage();
+  if (!kind.empty() && kind != "clock" && kind != "idle") return usage();
+  const int picked = !play.empty() + !playlist.empty() + !effect.empty() + !kind.empty() + !text.empty();
+  if (picked > 1) return usage();
   const json start = !play.empty()       ? json{{"mode", "media"}, {"media", play}}
                      : !playlist.empty() ? json{{"mode", "playlist"}, {"playlist", playlist}}
+                     : !effect.empty()   ? json{{"mode", "effect"}, {"effect", effect}}
+                     : !text.empty()     ? json{{"mode", "text"}, {"text", text}}
+                     : !kind.empty()     ? json{{"mode", kind}}
                                          : json{{"mode", "pattern"}, {"pattern", pattern},
                                                 {"color", color & 0xffffff}};
+  tzset();  // the clock uses the system's local time zone
 
   YAML::Node cfg, m;
   std::optional<Layout> L;
   State st;
+  FontSet fonts;
+  std::vector<ModeSpec> specs;
+  PressClassifier press;
   try {
     cfg = YAML::LoadFile(config_path);
     m = cfg["matrix"];
@@ -276,10 +378,19 @@ int main(int argc, char **argv) {
       chain.push_back({p["col"].as<int>(), p["row"].as<int>(), p["rotate"].as<int>(0)});
     L.emplace(m["panel_size"].as<int>(64), chain);
     st.s = load_settings(cfg);
+    press = load_button(cfg["button"]);
+    // Fonts load now: the matrix library drops root when it starts.
+    const std::string fdir = cfg["fonts"]["dir"].as<std::string>(LEDPOSTER_FONTS_DIR);
+    const auto missing = fonts.load(fdir);
+    if (!missing.empty())
+      fprintf(stderr, "fonts: %zu of %zu missing in %s (set fonts.dir)%s\n", missing.size(),
+              kFontNames.size(), fdir.c_str(), fonts.names().empty() ? "; no text or clock" : "");
+    specs = mode_specs(L->width, L->height, fonts);
+    st.ov.emplace(L->width, L->height);
     try {
-      std::tie(st.mode, st.info) = make_mode(start, cfg, media_dir, *L);
+      std::tie(st.mode, st.info) = make_mode(start, cfg, media_dir, *L, specs);
     } catch (const std::runtime_error &e) {
-      if (play.empty() && playlist.empty()) return usage();  // unknown pattern
+      if (!picked) return usage();  // unknown pattern
       throw;
     }
   } catch (const YAML::Exception &e) {
@@ -293,6 +404,9 @@ int main(int argc, char **argv) {
   const YAML::Node bh = cfg["sensors"]["bh1750"], eng = cfg["engine"];
   const std::string sock = eng["socket"].as<std::string>("/run/ledposter/engine.sock");
   const std::string psock = eng["preview_socket"].as<std::string>("/run/ledposter/frames.sock");
+  // Opened before the matrix starts (it drops root); polled from start() below.
+  YAML::Node bcfg = cfg["button"];  // non-const: a missing section reads as defaults
+  Button button(bcfg["chip"].as<std::string>("/dev/gpiochip0"), bcfg["gpio"].as<int>(-1), press);
 
   signal(SIGINT, [](int) { g_stop = 1; });
   signal(SIGTERM, [](int) { g_stop = 1; });
@@ -326,19 +440,77 @@ int main(int argc, char **argv) {
             {"power", st.power},
             {"w", layout.width},
             {"h", layout.height},
+            {"mode_settings", st.info.settings},
+            {"overlays", st.ov->names()},
+            {"button", button.state},
+            {"wifi_setup_requested", st.wifi_requested},
+            {"wifi_setup_count", st.wifi_count},
+            {"wifi_setup_at", std::isnan(st.wifi_at) ? json() : json(int64_t(st.wifi_at))},
             {"uptime_s", int64_t(std::chrono::duration<double>(
                                      std::chrono::steady_clock::now() - t0)
                                      .count())}};
   };
   auto ok = [] { return json::object(); };
+  auto engine_ms = [&] {
+    using namespace std::chrono;
+    return int64_t(duration_cast<milliseconds>(steady_clock::now() - t0).count());
+  };
 
-  // Runs on the control thread: validates, does any file I/O, and returns the
-  // job that applies the command on the frame loop. Owns its own config copy.
-  ControlServer::Handler handler =
-      [&, cfg = YAML::Clone(cfg), boot = YAML::Clone(cfg), cur = st.info](const json &req) mutable
-      -> Job {
+  // Shared by the control and button threads (ctl_mu): the config as last
+  // loaded. cur (cur_mu, never held during I/O) is the running mode, kept by
+  // the jobs that switch it.
+  std::mutex ctl_mu, cur_mu;
+  YAML::Node ctl_cfg = YAML::Clone(cfg);
+  const YAML::Node boot = YAML::Clone(cfg);
+  ModeInfo cur = st.info;
+  std::atomic<int> cycle_pos{-1};  // last button.cycle entry the button picked
+  auto install = [&](Mode mode, ModeInfo info) {
+    st.mode = std::move(mode), st.info = info, st.mode_t0 = -1;
+    std::lock_guard<std::mutex> l(cur_mu);
+    cur = std::move(info);
+  };
+
+  // Runs on the control thread (under ctl_mu): validates, does any file I/O,
+  // and returns the job that applies the command on the frame loop.
+  auto handle = [&](const json &req) -> Job {
+    YAML::Node &cfg = ctl_cfg;
     const std::string cmd = request_cmd(req);
     if (cmd == "status") return status;
+    if (cmd == "list_modes") {
+      json r = list_modes(specs, cfg, fonts);
+      return [r] { return r; };
+    }
+    if (cmd == "overlay") {
+      const std::string ev = arg_str(req, "event");
+      auto o = event_overlay(ev, fonts, layout.width, layout.height, random_seed());
+      if (!o) throw std::runtime_error("unknown event '" + ev + "' (kill, killstreak, death, win)");
+      return [&, o = *o] { return st.ov->set_event(o), json{{"ms", o.ms}}; };
+    }
+    if (cmd == "show_text") {
+      const json &tx = arg(req, "text");
+      if (!tx.is_string() || tx.get<std::string>().size() > 500)
+        throw std::runtime_error("'text' must be a string of at most 500 bytes (empty clears)");
+      const json sec = req.value("seconds", json(5));
+      if (!sec.is_number() || !(sec.get<double>() >= 0.5 && sec.get<double>() <= 86400))
+        throw std::runtime_error("'seconds' must be a number from 0.5 to 86400");
+      const uint32_t color = req.contains("color") ? parse_color(req["color"]) : 0xffffff;
+      if (tx.get<std::string>().empty()) return [&] { return st.ov->clear_text(), ok(); };
+      Overlay o = text_overlay(fonts, tx, color, int64_t(sec.get<double>() * 1000));
+      return [&, o] { return st.ov->set_text(o), json{{"ms", o.ms}}; };
+    }
+    if (cmd == "ack_wifi_setup") return [&] { return st.wifi_requested = false, ok(); };
+    if (cmd == "sim_button") {
+#ifdef LEDPOSTER_SIM
+      const json &v = arg(req, "ms");
+      if (!v.is_number() || !(v.get<double>() >= 1 && v.get<double>() <= 60000))
+        throw std::runtime_error("'ms' must be a number from 1 to 60000");
+      if (button.state != "sim") throw std::runtime_error("the button is off (set button.gpio in the config)");
+      button.simulate(int(v.get<double>()));
+      return ok;
+#else
+      throw std::runtime_error("sim_button only works in the simulator build (make sim)");
+#endif
+    }
     if (cmd == "set_brightness") {
       const int v = arg_pct(req, "value");
       return [&, v] { return st.s.user = v, ok(); };
@@ -352,20 +524,25 @@ int main(int argc, char **argv) {
       return [&, on] { return st.power = on, ok(); };
     }
     if (cmd == "set_mode") {
-      auto [mode, info] = make_mode(req, cfg, media_dir, layout);
-      cur = info;
+      auto [mode, info] = make_mode(req, cfg, media_dir, layout, specs);
       return [&, mode = std::move(mode), info = info]() mutable {
-        st.mode = std::move(mode), st.info = info, st.mode_t0 = -1;
-        return json{{"mode", info.kind}, {"mode_name", info.name}};
+        install(std::move(mode), info);
+        return json{{"mode", info.kind}, {"mode_name", info.name}, {"settings", info.settings}};
       };
     }
     if (cmd == "reload_config") {
       YAML::Node next = YAML::LoadFile(config_path);
       const Settings s = load_settings(next);
+      load_button(next["button"]);
+      ModeInfo running;
+      {
+        std::lock_guard<std::mutex> l(cur_mu);
+        running = cur;
+      }
       std::optional<Mode> mode;  // the running playlist, rebuilt from the new config
-      if (cur.kind == "playlist") mode = playlist_mode(next, cur.name, media_dir, layout);
+      if (running.kind == "playlist") mode = playlist_mode(next, running.name, media_dir, layout);
       json restart = json::array();
-      for (const char *k : {"matrix", "sensors", "engine"})
+      for (const char *k : {"matrix", "sensors", "engine", "button", "fonts"})
         if (yaml_at(next, k) != yaml_at(boot, k)) restart.push_back(k);
       cfg = next;
       return [&, s, mode, restart]() mutable {
@@ -387,10 +564,55 @@ int main(int argc, char **argv) {
     }
     throw std::runtime_error("unknown cmd '" + cmd + "'");
   };
+  ControlServer::Handler handler = [&](const json &req) {
+    std::lock_guard<std::mutex> l(ctl_mu);
+    return handle(req);
+  };
+
+  // Button presses become jobs too (no client: nobody gets the reply).
+  Mailbox mailbox;
+  auto on_press = [&](Press p) {
+    fprintf(stderr, "button: %s press\n", press_name(p));
+    Job job;
+    if (p == Press::Long) {
+      job = [&] { return st.power = !st.power, ok(); };
+    } else if (p == Press::VeryLong) {
+      // Networking (milestone 6) watches wifi_setup_requested / wifi_setup_count.
+      Overlay o = text_overlay(fonts, "Wi-Fi setup", 0xffffff, 4000);
+      job = [&, o] {
+        st.wifi_requested = true, st.wifi_count++, st.wifi_at = double(std::time(nullptr));
+        st.power = true;
+        return st.ov->set_text(o), ok();
+      };
+    } else {
+      // Next playlist item, or the next button.cycle entry. The next entry is
+      // built here (file I/O) in case the playlist is on its last item.
+      std::lock_guard<std::mutex> l(ctl_mu);
+      YAML::Node b = ctl_cfg["button"], cyc = b["cycle"];  // non-const: missing reads as empty
+      const bool skip_items = b["skip_playlist_items"].as<bool>(true);
+      const int n = cyc && cyc.IsSequence() ? int(cyc.size()) : 0;
+      std::optional<std::pair<Mode, ModeInfo>> next;
+      int idx = -1;
+      for (int k = 1; k <= n && !next; k++) {
+        idx = ((cycle_pos + k) % n + n) % n;
+        try {
+          next = make_mode(yaml_json(cyc[idx]), ctl_cfg, media_dir, layout, specs);
+        } catch (const std::exception &e) {
+          fprintf(stderr, "button.cycle[%d]: %s\n", idx, e.what());
+        }
+      }
+      job = [&, next, idx, skip_items]() mutable {
+        if (skip_items && st.mode.skip && st.mode_t0 >= 0 && st.mode.skip(engine_ms() - st.mode_t0))
+          return ok();
+        if (next) install(std::move(next->first), next->second), cycle_pos = idx;
+        return ok();
+      };
+    }
+    mailbox.push({0, nullptr, std::move(job)});
+  };
 
   // The wall keeps running without its sockets (e.g. no write access to
   // /run); it just can't be controlled or previewed.
-  Mailbox mailbox;
   std::unique_ptr<ControlServer> control;
   std::unique_ptr<PreviewServer> preview;
   try {
@@ -403,6 +625,7 @@ int main(int argc, char **argv) {
   } catch (const std::exception &e) {
     fprintf(stderr, "ledengine: preview socket off: %s\n", e.what());
   }
+  button.start(on_press);
 
   Frame frame(layout.width, layout.height), out(layout.width, layout.height);
   int64_t last_log = -1000, fps_t = 0, last_preview = -1000;
@@ -413,8 +636,13 @@ int main(int argc, char **argv) {
     const int64_t t = duration_cast<milliseconds>(steady_clock::now() - t0).count();
     if (st.mode_t0 < 0) st.mode_t0 = t;
     const int64_t next = st.mode_t0 + st.mode.render(frame, t - st.mode_t0);
+    int64_t wake = next;
     if (st.mode.gamma)
       for (auto &v : frame.rgb) v = st.s.lut[v];
+    if (st.ov->active(t)) {  // on top of the mode, before brightness and the limiter
+      st.ov->apply(frame, t, st.s.lut);
+      wake = std::min(wake, t + fx::kFrameMs);
+    }
     st.auto_pct = auto_pct(st.s.curve, sensor.smoothed);
     st.effective = effective_pct(st.s.user, st.s.auto_on ? st.auto_pct : NAN);
     st.out = limit_power(frame, layout.size, st.s.amps_full, st.power ? st.effective : 0,
@@ -435,7 +663,8 @@ int main(int argc, char **argv) {
       last_log = t;
     }
     // Wake at the next frame change, at least every 100ms, or when a command arrives.
-    mailbox.wait_until(t0 + milliseconds(std::clamp(next, t + 1, t + 100)));
+    mailbox.wait_until(t0 + milliseconds(std::clamp(wake, t + 1, t + 100)));
   }
+  button.halt();  // its callback uses everything declared after it
   return 0;
 }
