@@ -102,6 +102,11 @@ input[type=range]:disabled { opacity: .4; }
 .input, select.input, input.input { width: 100%; min-height: 44px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--line); background: #141417; color: var(--text); }
 .input:focus { border-color: var(--accent); outline: none; }
 input[type=time].input, input[type=number].input { font-variant-numeric: tabular-nums; }
+textarea.input { min-height: 112px; padding: 10px 14px; resize: vertical; font-size: 13px; line-height: 1.5; word-break: break-all; }
+.warnbox { background: #2b0f10; border: 1px solid #5a1c1e; border-radius: 12px; padding: 12px 14px; color: #ffb3b4; font-size: 14px; margin: 8px 0 12px; }
+.warnbox ul { margin: 6px 0 0; padding-left: 18px; }
+.banner.ok { background: #0d2b18; border-color: #1c5a30; color: #7ee2a0; }
+.banner .actions { margin-top: 8px; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { min-height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--muted); font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
 .chip.active, .chip[aria-pressed=true] { background: var(--accent); color: var(--accent-ink); border-color: transparent; }

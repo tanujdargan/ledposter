@@ -1,0 +1,21 @@
+# Second half of the maintenance window: runs at boot while /data/state/maintenance-pending
+# exists. With the overlay off (as the first half arranged) it upgrades, re-enables the
+# overlay and reboots; with the overlay on (a power cut hit between re-enabling and clearing
+# the marker) it just clears the marker. The wall keeps running during the upgrade.
+# Installed by system/install.sh.
+[Unit]
+Description=LED wall maintenance window (upgrade on the writable root)
+RequiresMountsFor=/data
+ConditionPathExists=/data/state/maintenance-pending
+After=network-online.target ledposter-engine.service ledposter-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=LEDPOSTER_DATA=/data
+ExecStart=/usr/local/bin/ledposter-sys maintenance resume
+TimeoutStartSec=3h
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

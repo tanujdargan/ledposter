@@ -312,6 +312,22 @@ static void test_button() {
   assert(r.size() == 1 && r[0].second == P::VeryLong && r[0].first == 800);
 }
 
+// Boot screen (M8): lit on both canvas sizes, the spinner moves, redraws every 100ms.
+static void test_boot(const FontSet &fonts) {
+  for (auto [w, h] : {std::pair{128, 192}, {64, 64}}) {
+    Mode m = boot_mode(fonts, w, h);
+    Frame a(w, h), b(w, h);
+    assert(m.name == "boot" && m.gamma);
+    assert(m.render(a, 0) == 100 && lit(a));
+    assert(m.render(b, 250) == 300 && lit(b) && a.rgb != b.rgb);
+    for (int x : {0, w - 1})  // margins stay dark
+      for (int y = 0; y < h; y++) assert(a.rgb[(y * w + x) * 3] == 0);
+    Frame c(w, h);
+    m.render(c, 800);  // the spinner has 8 steps: same picture as t = 0
+    assert(c.rgb == a.rgb);
+  }
+}
+
 static void test_playlist_skip() {
   Playlist p({1000, 1000, 1000}, true, false);
   assert(p.seek(500) == 500 && p.skip(500) && p.current() == 1);
@@ -333,4 +349,5 @@ static void test_m5() {
   test_overlays(fonts);
   test_button();
   test_playlist_skip();
+  test_boot(fonts);
 }

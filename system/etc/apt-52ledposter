@@ -1,0 +1,16 @@
+// /etc/apt/apt.conf.d/52ledposter (installed by system/install.sh).
+// unattended-upgrades runs only inside the maintenance window (ledposter-sys maintenance),
+// on the writable root, so the periodic apt timers are disabled by the installer and
+// nothing here schedules anything. Kernel and firmware packages are left out: a kernel
+// that changes under the overlay's initramfs is the one upgrade that can stop the wall
+// from booting, so those are a manual step with the overlay off (docs/DEVIATIONS.md).
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";
+Unattended-Upgrade::Package-Blacklist {
+    "linux-image-";
+    "linux-headers-";
+    "raspi-firmware";
+    "rpi-eeprom";
+};
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "false";

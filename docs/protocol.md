@@ -77,6 +77,7 @@ Commands take effect from the next frame (within about 100ms). A `status` sent r
 - `playlist`: a name under `playlists:` in the config as loaded (at start or by the last `reload_config`).
 - `effect`: `effect` is one of `spider-sense`, `web-shot`, `uav-radar`, `plasma`, `fire`, `starfield`.
 - `clock`, `text`, `idle`: no extra field.
+- `boot`: the boot screen ("LED POSTER" and a spinner, milestone 8). What the engine shows when started without a mode flag, until the web app restores the last mode from the config (`last_mode`); not listed by `list_modes`.
 
 Settings: every mode has the settings `list_modes` reports. They go in a `settings` object, or as top-level fields with the same names (`"text": "Hello!"` above), which win over `settings`. Missing settings take their defaults. An unknown name inside `settings`, or a value of the wrong type or out of range, is an error and nothing changes (`'speed' must be a number from 0.1 to 5`). Colors are accepted as `"RRGGBB"`, `"#RRGGBB"` or an integer and always reported as lowercase `"rrggbb"`.
 
@@ -192,8 +193,8 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
 
 | field | meaning |
 |---|---|
-| `mode` | `pattern`, `media`, `playlist`, `effect`, `clock`, `text` or `idle`; `stream` while DDP/E1.31 input has taken over |
-| `mode_name` | pattern name, media id, playlist name, effect id, or `clock`/`text`/`idle`; `ddp` or `e131` while streaming |
+| `mode` | `pattern`, `media`, `playlist`, `effect`, `clock`, `text`, `idle` or `boot`; `stream` while DDP/E1.31 input has taken over |
+| `mode_name` | pattern name, media id, playlist name, effect id, or `clock`/`text`/`idle`/`boot`; `ddp` or `e131` while streaming |
 | `mode_settings` | the running mode's resolved settings (empty for pattern, media and playlist) |
 | `overlays` | what is drawn on top right now: `[]`, or the event name and/or `"text"`, e.g. `["kill", "text"]` |
 | `button` | `ok` (GPIO line open), `missing` (configured but it could not be opened; see the log), `off` (no `button.gpio`), `sim` (simulator) |
@@ -220,7 +221,9 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
 | `stream.last_packet_ms_ago` | ms since the last valid packet, `null` if none yet |
 | `stream.ddp`, `stream.e131` | whether each receiver is listening |
 | `w`, `h` | logical canvas size |
-| `uptime_s` | seconds since the engine started |
+| `uptime_s` | seconds since the engine started. The web app uses it to restore the last mode once per engine start when `mode` is `boot` |
+
+The engine also logs `first frame` to stderr (the journal under systemd) once, when the first frame reached the panels: `journalctl -b -u ledposter-engine -o short-monotonic | grep 'first frame'` is the cold-boot measurement in docs/ACCEPTANCE.md.
 
 Current estimate: `sum of R+G+B / (255 * 3 * panel_size²) * amps_full_white_per_panel * output / 100`.
 

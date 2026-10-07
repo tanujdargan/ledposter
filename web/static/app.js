@@ -781,9 +781,120 @@ $("#setup-hotspot").onclick = async () => {
   if (!await confirmSheet("Start the setup hotspot?", "The wall leaves its current Wi-Fi and opens the LEDWall-Setup hotspot (password on the card). This app will stop responding until a network is joined from the setup page, or the wall is restarted.", "Start hotspot", false)) return;
   try { await api("/api/network/setup/start", { method: "POST" }); toast("Hotspot starting. Join LEDWall-Setup on your phone."); } catch (e) { toast(e.message, true); }
 };
+/* ---- settings: software, security, device actions (M8) ---- */
+let sysinfo = null, swPollT = null;
+const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const pad2 = (n) => String(n).padStart(2, "0");
+const rowBtn = (label, sub, onclick) => h("button", { class: "row link", onclick }, h("div", { class: "grow" }, h("span", { class: "label" }, label), sub ? h("span", { class: "sub" }, sub) : null), icon("chev", "chev"));
+const UPDATE_ACTIVE = ["fetching", "building", "testing", "switching", "restarting", "checking"];
+async function renderSystem() {
+  const list = $("#sw-list");
+  try { sysinfo = await api("/api/system"); }
+  catch (e) { list.replaceChildren(h("div", { class: "row" }, h("div", { class: "grow" }, h("span", { class: "label" }, "System unavailable"), h("span", { class: "sub" }, e.message)))); return; }
+  const s = sysinfo, m = s.maintenance;
+  list.replaceChildren(
+    h("div", { class: "row" }, h("div", { class: "grow" }, h("span", { class: "label" }, "Software version"), h("span", { class: "sub mono", id: "set-version" }, s.version), h("span", { class: "sub" }, s.overlay ? "Read-only root filesystem is on" : "Root filesystem is writable (overlay off)"))),
+    rowBtn("Check for updates", "Lists newer releases on the repository", checkUpdates),
+    s.previous ? rowBtn(`Roll back to ${s.previous}`, "Switch back to the release before the last update", () => rollbackSheet(s.previous)) : null,
+    rowBtn("Security updates", s.maintenance_pending ? "Maintenance window in progress (the wall reboots twice)" : m.enabled ? `${DAY_NAMES[m.day]}s at ${pad2(m.hour)}:00 · the wall reboots twice` : "Off", maintenanceSheet));
+  renderUpdateBanner(s.update);
+  $$("#ssh-mode input").forEach((i) => { i.checked = i.value === s.ssh.mode; });
+  $("#ssh-keys").value = s.ssh.authorized_keys;
+  $("#ssh-err").textContent = "";
+}
+function renderUpdateBanner(u) {
+  const b = $("#sw-banner"); clearTimeout(swPollT);
+  const dismissed = localStorage.getItem("updateDismissed");
+  if (!u || u.state === "idle" || (!UPDATE_ACTIVE.includes(u.state) && dismissed === String(u.updated))) { b.classList.add("hidden"); return; }
+  const target = u.target || "";
+  if (UPDATE_ACTIVE.includes(u.state)) {
+    b.className = "banner info";
+    b.replaceChildren(h("div", {}, h("b", {}, u.action === "rollback" ? `Rolling back to ${target}` : `Updating to ${target}`), ` · step ${u.step || "?"} of ${u.total || "?"}: ${u.message || u.state}`), h("div", { class: "progress indeterminate" }, h("i")));
+    swPollT = setTimeout(async () => { try { renderUpdateBanner(await api("/api/system/update")); } catch { swPollT = setTimeout(() => renderSystem(), 3000); } }, 2000);
+  } else {
+    const ok = u.state === "done";
+    b.className = `banner ${ok ? "ok" : "error"}`;
+    const dismiss = () => { localStorage.setItem("updateDismissed", String(u.updated)); b.classList.add("hidden"); };
+    b.replaceChildren(h("div", {}, h("b", {}, ok ? `Updated: ${u.message}` : u.state === "rolled_back" ? "Update rolled back" : "Update failed"), ok ? "" : ` · ${u.message || u.error || ""}`),
+      h("div", { class: "actions" }, h("button", { class: "btn sm", onclick: dismiss }, "Dismiss"), ok ? h("button", { class: "btn sm primary", onclick: () => location.reload() }, "Reload app") : null));
+  }
+  b.classList.remove("hidden");
+}
+async function checkUpdates() {
+  toast("Checking the repository…");
+  let r;
+  try { r = await api("/api/system/updates"); } catch (e) { toast(e.message, true); return; }
+  const start = async (tag) => {
+    closeSheet();
+    if (!await confirmSheet(`Update to ${tag}?`, "The wall fetches and builds the release (a few minutes on a Pi 3B), runs its tests, switches over and restarts both services. If the new version is not healthy within 90 seconds it rolls back by itself. The wall keeps showing during the build.", "Update", false)) return;
+    try { renderUpdateBanner(await api("/api/system/update", { method: "POST", body: { target: tag } })); } catch (e) { toast(e.message, true); }
+  };
+  openSheet(h("h3", {}, "Software updates"), h("p", { class: "muted" }, `Running ${r.current || sysinfo.version}.`),
+    r.newer.length ? h("div", { class: "list" }, r.newer.slice().reverse().map((t) => rowBtn(`Update to ${t}`, t === r.newer[r.newer.length - 1] ? "Latest release" : "", () => start(t)))) : h("p", {}, "You are on the latest release."),
+    h("details", { class: "card", style: "margin-top:12px" }, h("summary", {}, "All releases"), h("div", { class: "chips", style: "margin-top:8px" }, r.all.map((t) => h("button", { class: `chip${t === r.current ? " active" : ""}`, onclick: () => start(t) }, t)))),
+    h("div", { class: "actions" }, h("button", { class: "btn primary", onclick: closeSheet }, "Done")));
+}
+async function rollbackSheet(prev) {
+  if (!await confirmSheet(`Roll back to ${prev}?`, `The wall switches back to ${prev} and restarts the engine and the web app. The release you are on now becomes the one to roll "forward" to.`, "Roll back", false)) return;
+  try { renderUpdateBanner(await api("/api/system/rollback", { method: "POST" })); } catch (e) { toast(e.message, true); }
+}
+function maintenanceSheet() {
+  const m = { ...sysinfo.maintenance };
+  const err = h("div", { class: "err" });
+  const days = h("div", { class: "chips days", role: "group", "aria-label": "Day" });
+  const drawDays = () => days.replaceChildren(...DAYS.map((d, i) => h("button", { class: `chip day${m.day === i ? " active" : ""}`, "aria-pressed": m.day === i, "aria-label": DAY_NAMES[i], onclick: () => { m.day = i; drawDays(); } }, d)));
+  drawDays();
+  const hour = h("select", { class: "input", "aria-label": "Hour", onchange: (e) => { m.hour = +e.target.value; } }, [...Array(24).keys()].map((hh) => { const o = h("option", { value: hh }, `${pad2(hh)}:00`); o.selected = hh === m.hour; return o; }));
+  const save = async () => { err.textContent = ""; try { await api("/api/system/maintenance", { method: "PUT", body: m }); closeSheet(); toast("Saved"); renderSystem(); } catch (e) { err.textContent = e.message; } };
+  const runNow = async () => {
+    closeSheet();
+    if (!await confirmSheet("Run security updates now?", "The wall turns the read-only overlay off, reboots, installs Debian security updates, turns the overlay back on and reboots again. About 5 minutes; the wall shows its boot screen twice.", "Run now", false)) return;
+    try { await api("/api/system/maintenance/run", { method: "POST" }); toast("Maintenance started. The wall reboots shortly."); } catch (e) { toast(e.message, true); }
+  };
+  openSheet(h("h3", {}, "Security updates"),
+    h("p", { class: "muted" }, "Debian security patches (unattended-upgrades) are installed in a weekly window. Because the root filesystem is read-only, the wall reboots twice: once to make it writable, once to lock it again. Pick a time nobody is watching."),
+    h("div", { class: "row", style: "padding:0 0 8px" }, h("div", { class: "grow" }, "Weekly window"), switchEl(m.enabled, (v) => { m.enabled = v; }, "Weekly security updates")),
+    h("div", { class: "section-title" }, "Day"), days,
+    h("div", { class: "section-title" }, "Hour"), hour, err,
+    h("div", { class: "actions" }, h("button", { class: "btn", onclick: runNow }, "Run now"), h("button", { class: "btn primary", onclick: save }, "Save")));
+}
+$$("#ssh-mode input").forEach((i) => { i.onchange = () => $("#ssh-keys-wrap").classList.toggle("hidden", i.value !== "key-only" && i.checked); });
+$("#ssh-save").onclick = async () => {
+  const mode = ($("input[name=sshmode]:checked") || {}).value || "disabled", keys = $("#ssh-keys").value;
+  $("#ssh-err").textContent = "";
+  if (mode === "disabled" && sysinfo && sysinfo.ssh.mode !== "disabled" && !await confirmSheet("Turn SSH off?", "The SSH server stops now and stays off after reboots. Everything else keeps working; turn it back on here if you need a shell.", "Turn off")) return;
+  try { const r = await api("/api/system/ssh", { method: "PUT", body: { mode, authorized_keys: keys } }); toast(r.mode === "key-only" ? "SSH is on, keys only" : "SSH is off"); renderSystem(); }
+  catch (e) { $("#ssh-err").textContent = e.message; }
+};
+const sysAction = async (what, title, text) => {
+  if (title && !await confirmSheet(title, text, title.split("?")[0], false)) return;
+  try { await api("/api/system/restart", { method: "POST", body: { what } }); toast(what === "reboot" ? "Rebooting. Back in about 30 seconds." : what === "web" ? "Restarting the web app…" : "Restarting the engine…"); }
+  catch (e) { toast(e.message, true); }
+};
+$("#restart-engine").onclick = () => sysAction("engine");
+$("#restart-web").onclick = () => sysAction("web", "Restart the web app?", "This page reconnects by itself in a few seconds. The wall keeps showing.");
+$("#reboot").onclick = () => sysAction("reboot", "Reboot the wall?", "The wall goes dark for about 30 seconds and comes back on the mode it was showing.");
+$("#factory-reset").onclick = () => {
+  const plan = (sysinfo && sysinfo.reset_plan) || ["config.yaml", "media", "secret", "logs"], host = (sysinfo && sysinfo.hostname) || "ledposter";
+  const names = { "config.yaml": "all settings, playlists, schedule and the admin password", media: "every uploaded item", secret: "sign-in sessions and API tokens", logs: "logs", ssh: "SSH keys", "firewall.rules": "firewall rules", "maintenance.conf": "the update window", "net-rollback": "a pending static IP" };
+  const step2 = () => {
+    const input = h("input", { class: "input mono", autocapitalize: "off", autocomplete: "off", spellcheck: "false", placeholder: host, oninput: () => { go.disabled = input.value.trim().toLowerCase() !== host; } });
+    const go = h("button", { class: "btn danger", disabled: "", onclick: async () => {
+      try { await api("/api/system/factory_reset", { method: "POST", body: { hostname: input.value.trim() } }); } catch (e) { toast(e.message, true); return; }
+      openSheet(h("h3", { style: "color:var(--danger)" }, "Resetting…"), h("p", {}, "The wall erases its data and reboots into setup mode. In about a minute join the Wi-Fi network ", h("b", {}, "LEDWall-Setup"), " with the password from the card and open ", h("span", { class: "mono" }, "http://10.42.0.1/"), "."), h("p", { class: "muted" }, "You can close this page."));
+    } }, "Erase everything");
+    openSheet(h("h3", { style: "color:var(--danger)" }, "Are you sure?"), h("p", { class: "muted" }, `Type the wall's hostname, ${host}, to confirm. This cannot be undone.`),
+      h("label", { class: "field" }, h("span", {}, "Hostname"), input), h("div", { class: "actions" }, h("button", { class: "btn", onclick: closeSheet }, "Cancel"), go));
+    input.focus();
+  };
+  openSheet(h("h3", { style: "color:var(--danger)" }, "Factory reset"),
+    h("div", { class: "warnbox" }, h("b", {}, "This will erase:"), h("ul", {}, plan.map((p) => h("li", {}, names[p] || p)), h("li", {}, "saved Wi-Fi networks and the hostname"))),
+    h("p", { class: "muted" }, "Kept: the installed software and the setup hotspot password printed on the card. The wall reboots and opens the LEDWall-Setup hotspot, like a new unit."),
+    h("div", { class: "actions" }, h("button", { class: "btn", onclick: closeSheet }, "Cancel"), h("button", { class: "btn danger", onclick: step2 }, "Continue")));
+};
 views.settings = async (arg) => {
   views.current = "settings";
-  await loadSettings(); bindSettings(); renderTokens();
+  await loadSettings(); bindSettings(); renderTokens(); renderSystem();
   if (arg === "confirm") { history.replaceState(null, "", "#/settings"); await confirmStatic(); } else renderNetwork();
 };
 

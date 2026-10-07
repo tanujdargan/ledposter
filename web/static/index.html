@@ -216,9 +216,12 @@
   <!-- Settings: Hue grouped list, WHOOP maintenance actions, Quest advanced -->
   <section class="view" data-view="settings">
     <div class="topbar"><a class="btn icon ghost back" href="#/more" aria-label="Back"><svg><use href="#i-back"/></svg></a><h1>Settings</h1></div>
+    <!-- Software (M8): Hue bridge-settings version row, WHOOP "firmware check" action with progress -->
+    <div class="section-title">Software</div>
+    <div class="banner hidden" id="sw-banner"></div>
+    <div class="list" id="sw-list"><div class="row"><div class="grow"><span class="label">Software version</span></div><span class="value mono" id="set-version">–</span></div></div>
     <div class="section-title">Device</div>
     <div class="list">
-      <div class="row"><div class="grow"><span class="label">Software version</span></div><span class="value mono" id="set-version">–</span></div>
       <button class="row link" id="set-password"><div class="grow"><span class="label">Admin password</span><span class="sub">Change the sign-in password</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
     </div>
     <!-- Network (M6): Hue bridge-settings rows; the Wi-Fi row opens the section-7 wizard at /setup -->
@@ -234,6 +237,21 @@
         <li>Restart the wall, or wait for its lease to renew. <span class="mono">ledposter.local</span> keeps working either way.</li>
       </ol>
     </details>
+    <!-- Security (M8): SSH off or key-only; Meta Quest advanced row with a caption -->
+    <div class="section-title">Security</div>
+    <div class="card">
+      <div class="row" style="padding:0 0 8px"><div class="grow"><span class="label">SSH access</span><span class="sub">Off, or public keys only. Passwords are never accepted.</span></div></div>
+      <div class="seg" role="radiogroup" aria-label="SSH mode" id="ssh-mode">
+        <label><input type="radio" name="sshmode" value="disabled"><span>Off</span></label>
+        <label><input type="radio" name="sshmode" value="key-only"><span>Key only</span></label>
+      </div>
+      <div id="ssh-keys-wrap" style="margin-top:12px">
+        <label class="field"><span>Authorized public keys (one per line)</span><textarea class="input mono" id="ssh-keys" rows="4" spellcheck="false" autocapitalize="off" placeholder="ssh-ed25519 AAAA... you@laptop"></textarea></label>
+        <p class="help">Log in as the user the wall was installed with. Keys from the installer are listed here too.</p>
+      </div>
+      <div class="err" id="ssh-err"></div>
+      <button class="btn primary block" id="ssh-save">Save SSH settings</button>
+    </div>
     <div class="section-title">API tokens</div>
     <div class="list" id="token-list"></div>
     <p class="help">For Home Assistant, scripts and the game hook. Sent as <span class="mono">Authorization: Bearer</span>.</p>
@@ -285,7 +303,14 @@
       <button class="row link" id="panel-test"><div class="grow"><span class="label">Panel ID test</span><span class="sub">Shows 1 to 6 with an up-arrow on each panel to check the wiring</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
       <button class="row link" id="show-ip"><div class="grow"><span class="label">Show address on the wall</span><span class="sub">Hostname and IP for 10 seconds, like at boot</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
       <button class="row link" id="setup-hotspot"><div class="grow"><span class="label">Start Wi-Fi setup hotspot</span><span class="sub">Same as holding the button for 10s: the wall leaves this network and opens LEDWall-Setup</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
+      <!-- M8: WHOOP-style device actions -->
+      <button class="row link" id="restart-engine"><div class="grow"><span class="label">Restart engine</span><span class="sub">Restarts the display process; the wall shows its boot screen for a few seconds</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
+      <button class="row link" id="restart-web"><div class="grow"><span class="label">Restart web app</span><span class="sub">This app reconnects in a few seconds; the wall keeps showing</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
+      <button class="row link" id="reboot"><div class="grow"><span class="label">Reboot</span><span class="sub">Full restart of the Pi, about 30 seconds</span></div><svg class="chev"><use href="#i-chev"/></svg></button>
     </div>
+    <!-- Destructive, at the very bottom (Hue "Remove", Starlink warning, Meta Quest confirmation) -->
+    <button class="btn danger block" id="factory-reset" style="margin-top:8px">Factory reset</button>
+    <p class="help" style="text-align:center;margin-top:8px">Erases config, media, tokens, SSH keys and Wi-Fi. Keeps the setup card password.</p>
   </section>
 </main>
 

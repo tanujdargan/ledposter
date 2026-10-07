@@ -1,0 +1,14 @@
+# Hourly check for the maintenance window; the service decides whether this is the hour
+# (so the day and hour can be changed in Settings without touching /etc). Not Persistent:
+# the stamp dir is on the overlay, and a missed week simply waits for the next one.
+# Installed by system/install.sh.
+[Unit]
+Description=LED wall maintenance window check
+
+[Timer]
+OnCalendar=hourly
+AccuracySec=5min
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

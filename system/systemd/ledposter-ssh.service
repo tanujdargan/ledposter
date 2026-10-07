@@ -1,0 +1,17 @@
+# Applies the SSH mode from /data/ssh/mode (disabled, or key-only with /data/ssh/authorized_keys):
+# writes the sshd drop-in (PasswordAuthentication no, PermitRootLogin no), copies the keys to
+# /etc/ssh/ledposter_authorized_keys, and starts or stops ssh.service (which the installer
+# leaves disabled, so this unit decides at every boot). Started by the web app on a change.
+# Installed by system/install.sh.
+[Unit]
+Description=LED wall SSH mode
+RequiresMountsFor=/data
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Environment=LEDPOSTER_DATA=/data
+ExecStart=/usr/local/bin/ledposter-sys ssh
+
+[Install]
+WantedBy=multi-user.target

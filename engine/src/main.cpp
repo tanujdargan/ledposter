@@ -129,10 +129,11 @@ static int usage() {
           "usage: ledengine [--config $LEDPOSTER_DATA/config.yaml]\n"
           "                 [--pattern P [--color RRGGBB] | --play MEDIA_ID | --playlist NAME |\n"
           "                  --effect E | --mode clock|idle | --text TEXT]\n"
-          "  P: panel-id (default), solid, cycle, rows, cols\n"
+          "  P: panel-id, solid, cycle, rows, cols\n"
           "  E: spider-sense, web-shot, uav-radar, plasma, fire, starfield (default settings)\n"
           "  media is read from $LEDPOSTER_DATA/media (LEDPOSTER_DATA defaults to /data)\n"
-          "  the flags set the starting mode; the control socket can change it\n"
+          "  the flags set the starting mode (default: the boot screen until the web app\n"
+          "  sets one); the control socket can change it\n"
 #ifdef LEDPOSTER_SIM
           "  sim only: --dump out.ppm writes the output frame about once a second\n"
 #endif
@@ -198,8 +199,10 @@ static const char *kPatterns[] = {"panel-id", "solid", "cycle", "rows", "cols"};
 // thread, not the frame loop.
 static std::pair<Mode, ModeInfo> make_mode(json a, const YAML::Node &cfg,
                                            const std::string &media_dir, const Layout &L,
-                                           const std::vector<ModeSpec> &specs) {
+                                           const std::vector<ModeSpec> &specs,
+                                           const FontSet &fonts) {
   const std::string kind = arg_str(a, "mode");
+  if (kind == "boot") return {boot_mode(fonts, L.width, L.height), {kind, kind}};
   if ((kind == "pattern" || kind == "media" || kind == "playlist") && a.contains("settings")) {
     if (!a["settings"].is_object()) throw std::runtime_error("'settings' must be an object");
     for (auto &[k, v] : a["settings"].items()) a[k] = v;  // same as top-level fields
@@ -224,7 +227,7 @@ static std::pair<Mode, ModeInfo> make_mode(json a, const YAML::Node &cfg,
     const std::string name = arg_str(a, "playlist");
     return {playlist_mode(cfg, name, media_dir, L), {kind, name}};
   }
-  throw std::runtime_error("mode must be pattern, media, playlist, effect, clock, text or idle");
+  throw std::runtime_error("mode must be pattern, media, playlist, effect, clock, text, idle or boot");
 }
 
 // list_modes: every mode with its settings schema.
@@ -404,7 +407,7 @@ static PressClassifier load_button(YAML::Node b) {  // non-const: missing keys r
 int main(int argc, char **argv) {
   const char *env = getenv("LEDPOSTER_DATA");
   const std::string data = env && *env ? env : "/data", media_dir = data + "/media";
-  std::string config_path = data + "/config.yaml", pattern = "panel-id", play, playlist, dump;
+  std::string config_path = data + "/config.yaml", pattern, play, playlist, dump;
   std::string effect, kind, text;
   uint32_t color = 0xffffff;
   if ((argc - 1) % 2) return usage();
@@ -424,15 +427,18 @@ int main(int argc, char **argv) {
     else return usage();
   }
   if (!kind.empty() && kind != "clock" && kind != "idle") return usage();
-  const int picked = !play.empty() + !playlist.empty() + !effect.empty() + !kind.empty() + !text.empty();
+  const int picked = !play.empty() + !playlist.empty() + !effect.empty() + !kind.empty() +
+                     !text.empty() + !pattern.empty();
   if (picked > 1) return usage();
+  // No flag: the boot screen, until the web app restores the last mode (M8).
   const json start = !play.empty()       ? json{{"mode", "media"}, {"media", play}}
                      : !playlist.empty() ? json{{"mode", "playlist"}, {"playlist", playlist}}
                      : !effect.empty()   ? json{{"mode", "effect"}, {"effect", effect}}
                      : !text.empty()     ? json{{"mode", "text"}, {"text", text}}
                      : !kind.empty()     ? json{{"mode", kind}}
-                                         : json{{"mode", "pattern"}, {"pattern", pattern},
-                                                {"color", color & 0xffffff}};
+                     : !pattern.empty()  ? json{{"mode", "pattern"}, {"pattern", pattern},
+                                                {"color", color & 0xffffff}}
+                                         : json{{"mode", "boot"}};
   tzset();  // the clock uses the system's local time zone
 
   YAML::Node cfg, m;
@@ -459,9 +465,9 @@ int main(int argc, char **argv) {
     specs = mode_specs(L->width, L->height, fonts);
     st.ov.emplace(L->width, L->height);
     try {
-      std::tie(st.mode, st.info) = make_mode(start, cfg, media_dir, *L, specs);
+      std::tie(st.mode, st.info) = make_mode(start, cfg, media_dir, *L, specs, fonts);
     } catch (const std::runtime_error &e) {
-      if (!picked) return usage();  // unknown pattern
+      if (!pattern.empty()) return usage();  // unknown pattern
       throw;
     }
   } catch (const YAML::Exception &e) {
@@ -623,7 +629,7 @@ int main(int argc, char **argv) {
       return [&, on] { return st.power = on, ok(); };
     }
     if (cmd == "set_mode") {
-      auto [mode, info] = make_mode(req, cfg, media_dir, layout, specs);
+      auto [mode, info] = make_mode(req, cfg, media_dir, layout, specs, fonts);
       return [&, mode = std::move(mode), info = info]() mutable {
         install(std::move(mode), info);
         return json{{"mode", info.kind}, {"mode_name", info.name}, {"settings", info.settings}};
@@ -714,7 +720,7 @@ int main(int argc, char **argv) {
       for (int k = 1; k <= n && !next; k++) {
         idx = ((cycle_pos + k) % n + n) % n;
         try {
-          next = make_mode(yaml_json(cyc[idx]), ctl_cfg, media_dir, layout, specs);
+          next = make_mode(yaml_json(cyc[idx]), ctl_cfg, media_dir, layout, specs, fonts);
         } catch (const std::exception &e) {
           fprintf(stderr, "button.cycle[%d]: %s\n", idx, e.what());
         }
@@ -761,6 +767,7 @@ int main(int argc, char **argv) {
       sframe(layout.width, layout.height);
   int64_t last_log = -1000, fps_t = 0, last_preview = -1000;
   int frames = 0;
+  bool shown = false;
   while (!g_stop) {
     using namespace std::chrono;
     mailbox.run();
@@ -796,6 +803,7 @@ int main(int argc, char **argv) {
     st.out = limit_power(frame, layout.size, st.s.amps_full, st.power ? st.effective : 0,
                          st.s.ceiling);
     display.show(frame, st.out.pct);
+    if (!shown) fprintf(stderr, "first frame\n"), shown = true;  // boot timing (docs/ACCEPTANCE.md)
     frames++;
     if (t - fps_t >= 1000) {
       st.fps = frames * 1000.0 / (t - fps_t), frames = 0;

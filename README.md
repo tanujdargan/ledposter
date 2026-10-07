@@ -8,14 +8,14 @@ engine/   C++ display engine (owns the matrix, frame loop, brightness and limite
 web/      Python package `ledposter`: FastAPI web app + REST API, transcoder, engine client
 web/static  the PWA (vanilla JS, no build step)
 config/   example YAML configs (all hardware tunables live here)
-tools/    game_hook.py: sends game events to the wall from a PC (stdlib only)
-system/   files M8 installs on the Pi: avahi service, captive-portal dnsmasq config, polkit rules,
-          systemd units and the root-side helper script for networking (see "System files")
+tools/    game_hook.py (sends game events from a PC, stdlib only), acceptance.sh (on-device acceptance checks)
+system/   install.sh and what it installs on the Pi: systemd units, polkit rules, the root-side scripts
+          (bin/ledposter-net, bin/ledposter-sys), avahi, dnsmasq, journald/NetworkManager/apt/sysctl drop-ins
 vendor/   hzeller/rpi-rgb-led-matrix (git submodule, pinned)
-docs/     spec, architecture contracts, engine socket protocol (protocol.md), UI references, deviations
+docs/     spec, architecture contracts, engine socket protocol (protocol.md), UI references, deviations, ACCEPTANCE.md
 ```
 
-Status: **milestone 7**, Home Assistant and streaming input. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 added the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`. Milestone 5 added the engine-drawn modes: six generative effects (spider-sense ripple, web-shot trace, UAV radar sweep, plasma, fire, starfield), a clock, an idle screen and a text scroller, each with settings the engine describes (`list_modes`) and the web app's mode picker is built from; overlays on top of any mode (game hook events `kill`, `killstreak`, `death`, `win` via `POST /api/event` and `tools/game_hook.py`, and `show_text` messages); and the push button (short press: next mode or playlist item, 2s: display on/off, 10s: Wi-Fi setup request). Milestone 6 added networking: `ledposter.local` over Avahi, stable DHCP, an optional static IP with automatic rollback, hostname from Settings, the IP on the wall at boot, and the `LEDWall-Setup` hotspot with a captive portal for first-time Wi-Fi setup. Milestone 7 adds Home Assistant over MQTT (discovery: a light with brightness and effects, current and light sensors, a playlist select) and DDP / E1.31 streaming input that takes over the wall while a sender plays; a button double press shows the IP.
+Status: **milestone 8**, hardening and installer: feature complete against docs/spec.md. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 added the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`. Milestone 5 added the engine-drawn modes: six generative effects (spider-sense ripple, web-shot trace, UAV radar sweep, plasma, fire, starfield), a clock, an idle screen and a text scroller, each with settings the engine describes (`list_modes`) and the web app's mode picker is built from; overlays on top of any mode (game hook events `kill`, `killstreak`, `death`, `win` via `POST /api/event` and `tools/game_hook.py`, and `show_text` messages); and the push button (short press: next mode or playlist item, 2s: display on/off, 10s: Wi-Fi setup request). Milestone 6 added networking: `ledposter.local` over Avahi, stable DHCP, an optional static IP with automatic rollback, hostname from Settings, the IP on the wall at boot, and the `LEDWall-Setup` hotspot with a captive portal for first-time Wi-Fi setup. Milestone 7 added Home Assistant over MQTT (discovery: a light with brightness and effects, current and light sensors, a playlist select) and DDP / E1.31 streaming input that takes over the wall while a sender plays; a button double press shows the IP. Milestone 8 hardens the Pi: `system/install.sh` sets up a fresh Raspberry Pi OS Lite card from scratch (dedicated `ledposter` user, `/data` partition, systemd units, polkit, ufw, SSH key-only or off, journald in RAM, read-only root overlay), the engine starts on a boot screen and the web app restores the last mode, software updates to a tagged release with automatic rollback (Settings > Software), a weekly security-update window, factory reset, and `docs/ACCEPTANCE.md` with `tools/acceptance.sh` for the spec's acceptance criteria.
 
 ## Wiring assumptions
 
@@ -50,14 +50,51 @@ Status: **milestone 7**, Home Assistant and streaming input. Milestone 1 gave co
 
   GPIO25 is free with both `adafruit-hat` and `adafruit-hat-pwm` (they use GPIO 4/18, 5, 6, 12, 13, 16, 17, 20, 21, 22, 23, 24, 26, 27; the BH1750 uses 2 and 3). The bonnet covers the header: solder the two wires to pins 22 and 20 from under the Pi, or put a stacking header between the Pi and the bonnet and use its pins. Another free pin works too (7, 8, 9, 10, 11, 19): set `button.gpio` to its BCM number. Keep the wires short or twisted; the default 30ms `debounce_ms` handles normal contact bounce.
 
-## Pi setup (once)
+## Install on a fresh Pi (milestone 8)
+
+What you need: a Raspberry Pi 3B, a 16GB or bigger SD card, Raspberry Pi OS **Lite 64-bit (Bookworm)**, the hardware wired as above, a GitHub account with read access to this private repo, and about 30 minutes (most of it the Pi compiling).
+
+**1. Flash the card.** Raspberry Pi Imager > Raspberry Pi OS Lite (64-bit). In the OS customisation set a hostname (anything; the installer renames it `ledposter`), your user and password, your Wi-Fi, and **enable SSH with public-key authentication** (paste your public key). Write the card.
+
+**2. Before the first boot, stop the root partition from eating the whole card.** Raspberry Pi OS grows the root filesystem to fill the card on its first boot, and a mounted ext4 root cannot be shrunk later. The wall keeps media, config and the software on a separate `/data` partition, so the root must stay small. With the card still in your computer open the `bootfs` partition, edit `cmdline.txt` and delete the text ` init=/usr/lib/raspi-config/init_resize.sh` (one line, keep the rest). Eject the card. (Skipped it? `install.sh` tells you, and `docs/DEVIATIONS.md` lists the other options.)
+
+**3. First boot and clone.** Put the card in, power the Pi (the panels can stay off), wait a minute, then from your computer:
+
+```sh
+ssh you@<hostname>.local
+sudo apt install -y git
+git clone --recurse-submodules git@github.com:tanujdargan/ledposter.git     # or https://... with a token
+cd ledposter
+```
+
+Cloning a private repo on the Pi needs credentials once: an SSH key the Pi has (`ssh-keygen` and add it to GitHub, or agent forwarding `ssh -A`), or `https://<token>@github.com/...`. Updates later use the wall's own deploy key (step 5).
+
+**4. Run the installer.**
+
+```sh
+sudo ./system/install.sh --ssh-key "ssh-ed25519 AAAA... you@laptop"      # key-only SSH stays on
+sudo ./system/install.sh --ssh disabled                                  # or: no SSH at all after the reboot
+sudo ./system/install.sh --dry-run --data-dir /tmp/x                     # see every step without doing anything
+```
+
+Options: `--hostname NAME` (default `ledposter`), `--no-overlay` (keep the root writable, for development), `--data-dir PATH` (a directory instead of the partition, testing only; implies `--no-overlay`), `--force-build`. It is idempotent: run it again after changing anything under `system/`. It installs the apt packages (one pinned list at the top of the script), creates the `ledposter` user, creates and mounts `/data` (an existing partition labelled `ledpostdata`, or a new one in the free space), builds the engine and the web venv under `/data/app/releases/<version>`, writes `/data/config.yaml` and the setup card password, installs the systemd units, polkit rules, avahi, dnsmasq, journald, NetworkManager and apt drop-ins, persists Wi-Fi profiles across the overlay, sets the hostname, boot config (`dtparam=audio=off`, `isolcpus=3`, I2C on), disables Bluetooth/ModemManager/triggerhappy/swap/apt timers, applies the firewall and the SSH mode, and finally turns on the read-only root overlay. SSH is left exactly as it was until the end, and the installer refuses to continue if you are connected over SSH without a key and did not pass `--ssh disabled`.
+
+It ends with a summary: **the setup hotspot password** (print it on the card in the box), the SSH mode, and the wall's **deploy key**.
+
+**5. Add the deploy key** so the wall can fetch updates: GitHub > the repo > Settings > Deploy keys > Add, paste the printed `ssh-ed25519 ...` key, read-only. (Alternative: a fine-grained personal access token with read access to the repo's contents, saved as `sudo tee /data/app/token` and `chmod 600`; the deploy key is recommended because it is tied to the one repo and the one wall.) Then `sudo reboot`.
+
+**6. First frame.** Within 30s of power the wall shows `LED POSTER` with a spinner (the boot screen), then the IP for 10s once the web app is up. Open `http://ledposter.local/`, set the admin password, and you are on the Home screen. Run `docs/ACCEPTANCE.md` (`sudo /data/app/current/tools/acceptance.sh`) and the milestone 8 tests below.
+
+Where things are on the Pi: software under `/data/app` (`current` -> `releases/<tag>`, `previous`), config `/data/config.yaml`, media `/data/media`, logs that survive a reboot `/data/logs` (system logs are in RAM: `journalctl -b`), the hotspot password `/data/setup-password`. Everything outside `/data` is read-only; `sudo ledposter-sys overlay off` and a reboot make it writable, `overlay on` locks it again (`docs/DEVIATIONS.md`).
+
+## Development setup (no installer)
 
 ```sh
 sudo apt install -y git build-essential libyaml-cpp-dev nlohmann-json3-dev ffmpeg python3-venv python3-numpy
 git clone --recurse-submodules git@github.com:tanujdargan/ledposter.git
 ```
 
-In `/boot/firmware/config.txt` set `dtparam=audio=off`. Then append `isolcpus=3` to the single line in `/boot/firmware/cmdline.txt`, and reboot. The matrix library pins its refresh thread to core 3, and on-board audio conflicts with the PWM hardware it uses.
+For hacking on the Pi without the installer (milestones 1 to 7 were tested this way). In `/boot/firmware/config.txt` set `dtparam=audio=off`. Then append `isolcpus=3` to the single line in `/boot/firmware/cmdline.txt`, and reboot. The matrix library pins its refresh thread to core 3, and on-board audio conflicts with the PWM hardware it uses. On a Mac or Linux box, `make sim` and the fake engine (below) run everything but the panels.
 
 ## Build and test
 
@@ -103,7 +140,7 @@ Text, the clock and on-wall messages use the BDF fonts that come with rpi-rgb-le
 
 The engine prints its estimated current draw and output brightness once a second, plus `(limited)` when the limiter is turning the frame down. Full white on six panels is about 36A unlimited, so the limiter holds it at `power.ceiling_amps` (13A): output brightness 36%, 12.96A.
 
-The flags only pick the starting mode. While it runs, the engine listens on `engine.socket` for commands (`status`, `set_brightness`, `set_auto_brightness`, `power`, `set_mode`, `list_modes`, `overlay`, `show_text`, `ack_wifi_setup`, `reload_config`, `set_stream`) and streams its output on `engine.preview_socket`; both are in [docs/protocol.md](docs/protocol.md). From a shell, with `socat`:
+Without a mode flag the engine shows the boot screen (`LED POSTER` and a spinner) until the web app sets a mode: on the installed wall the web app restores the last mode from the config a few seconds later. The flags only pick the starting mode. While it runs, the engine listens on `engine.socket` for commands (`status`, `set_brightness`, `set_auto_brightness`, `power`, `set_mode`, `list_modes`, `overlay`, `show_text`, `ack_wifi_setup`, `reload_config`, `set_stream`) and streams its output on `engine.preview_socket`; both are in [docs/protocol.md](docs/protocol.md). From a shell, with `socat`:
 
 ```sh
 echo '{"id":1,"cmd":"status"}' | sudo socat - UNIX-CONNECT:/run/ledposter/engine.sock
@@ -128,6 +165,114 @@ Brightness: `effective = min(brightness.user, auto)` where auto comes from the B
 | `--w W --h H` | 128 192 | canvas size; use `--w 64 --h 64` for `single-panel.yaml` |
 
 Frame timings are kept (GIF delays, video timestamps). Stills are stored as one 10s frame. About 74KB per frame: a 30s 30fps clip is 66MB.
+
+## Web app
+
+```sh
+cd web
+.venv/bin/pip install -r requirements.txt
+LEDPOSTER_DATA=~/lpdata .venv/bin/python -m ledposter --port 8080   # port defaults to config web.port
+```
+
+Open `http://<pi>:8080/`. The first visit asks for an admin password (stored as a scrypt hash in `config.yaml`); everything under `/api` and the app itself need the session cookie or an API token (`Authorization: Bearer lp_...`, created in Settings). The API is documented at `/docs` (OpenAPI at `/openapi.json`); every button in the UI is one of those endpoints. The live preview is a WebSocket at `/api/preview`: one text message with the engine status, then one binary frame of `w*h*3` RGB bytes, up to 15 a second.
+
+Uploads go to `$LEDPOSTER_DATA/media/<id>/` and are transcoded one at a time by a background worker with `ledposter.transcode`; the item's settings (scale, filter, crop, position, speed, dither) can be changed in the editor, which re-transcodes. Playlists are written to the config's `playlists:` section in the engine's format, followed by `reload_config`. The schedule (on/off times, quiet-hours brightness cap) is enforced by the web app's own scheduler task. If the engine is down the app keeps working for the library and settings and shows "engine offline" until it reconnects.
+
+The Modes screen is built from the engine's `list_modes` (`GET /api/modes`): media, the six effects, clock, text, idle and the test patterns, each with its settings sheet (speed slider, colour list, text with a character count, toggles). Changes apply live. While the engine is offline it shows the last list it got.
+
+### Game hook
+
+`POST /api/event` with `{"event": "kill"}` (also `killstreak`, `death`, `win`) plays a 1.5 to 3s overlay on top of whatever the wall shows. Use an API token from Settings (`Authorization: Bearer lp_...`). Unknown events get a 400; more than 10 events in 5 seconds from one token get a 429. From a PC, `tools/game_hook.py` sends them (Python 3.8+, no packages):
+
+```sh
+export LEDPOSTER_URL=http://ledposter.local LEDPOSTER_TOKEN=lp_...
+python3 tools/game_hook.py kill
+your-detector | python3 tools/game_hook.py --stdin    # one event name per line
+```
+
+How a game's kills and deaths are detected is up to you (out of scope for v1): call `game_hook.send("kill")` from your own script, or print event names into `--stdin`.
+
+Dev without a Pi: `python tests/fake_engine.py /tmp/lpsock` serves the two sockets with a moving test image; point `engine.socket`/`engine.preview_socket` at them. Or build the real engine with `cd engine && make sim`. `LEDPOSTER_FAKE_NET=1` (or `offline`) swaps NetworkManager for `tests/fake_net.py`, so the Wi-Fi setup and static IP screens can be exercised on a laptop without touching its network; `offline` boots "without a known network" and raises the (fake) hotspot after `network.setup_timeout_s`.
+
+### Networking (milestone 6)
+
+Everything that touches the OS goes through `web/ledposter/net.py`, which shells out to `nmcli`, `hostnamectl`, `systemctl` and `ping` (NetworkManager is Bookworm's default; dhcpcd is not used). The wall is reached by name:
+
+- **`ledposter.local`**: Avahi advertises the hostname and an `_http._tcp` service (`system/avahi/ledposter.service`). Settings > Hostname changes it (one RFC 1123 label); `hostnamectl` sets it and `ledposter-hosts.service` rewrites `/etc/hosts` as root; Avahi follows.
+- **DHCP by default**, with `ipv4.dhcp-client-id mac` and `ipv4.dhcp-send-hostname yes` set on every Wi-Fi profile the app creates or joins, so routers hand back the same lease. Settings explains how to add a DHCP reservation and shows the MAC.
+- **Static IP** (Settings > IP address): validated against the current subnet (inside the network, not the network/broadcast address, gateway in the subnet, address not already answering a ping). Before it is applied the app writes `$LEDPOSTER_DATA/net-rollback` and restarts `ledposter-net-rollback.timer` (120s); then it applies the address 1.5s after answering, and the browser is sent to `http://<new ip>/#/settings/confirm`. Signing in there and tapping "Keep this address" (`POST /api/network/static/confirm`) stops the timer. Otherwise `ledposter-net rollback` runs as root and puts the connection back on DHCP, whether or not the web app is alive.
+- **IP on the wall**: hostname and IP for `network.show_ip_s` seconds when the web app starts and the engine and network are up, and from Settings > "Show address on the wall" (`POST /api/network/show_ip`). A double button press is the planned trigger (docs/DEVIATIONS.md).
+- **First-time setup**: no Wi-Fi or Ethernet within `network.setup_timeout_s` of the web app starting, or the engine reporting a 10s button hold (`wifi_setup_requested`), or Settings > "Start Wi-Fi setup hotspot": the app scans (one radio, so before the AP is up), then raises the WPA2 hotspot `LEDWall-Setup` with the password in `$LEDPOSTER_DATA/setup-password` (created at install and printed on the card; created on first start if missing, with a log line saying where). NM shared mode runs dnsmasq; `system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf` resolves every name to `10.42.0.1`, and the app answers the OS connectivity probes (`/hotspot-detect.html`, `/generate_204`, `/connecttest.txt`, `/ncsi.txt`, ...) with a redirect to `/setup`, so the phone opens the portal by itself. The wizard: admin password first on a fresh wall, then the network list (signal and lock icons; Refresh drops the hotspot for ~15s), the network's password, and a 4-step progress screen. Joining switches the hotspot off; on failure it comes back with the reason. The wall shows each step as text: hotspot up, joining, joined with IP, or failed with the reason.
+- **Auth**: the setup endpoints are open without login only while the hotspot is up on a wall that has no admin password yet. Everything else always needs the session or a token. Threat model in docs/DEVIATIONS.md.
+
+All of it is in the API under `network` at `/docs`: `GET /api/network`, `PUT /api/network/hostname`, `POST /api/network/static`, `/static/confirm`, `/dhcp`, `/show_ip`, `GET /api/network/setup`, `/setup/start`, `/setup/stop`, `GET /api/network/wifi`, `/wifi/scan`, `/wifi/join`.
+
+## Streaming input (WLED, LedFx, xLights)
+
+The engine has a DDP receiver on UDP 4048 and an E1.31/sACN receiver on UDP 5568, both off by default. Turn them on in Settings > Integrations (or `ddp: {enabled: true}` / `e131: {enabled: true}` in the config). While frames arrive they replace whatever the wall shows; 5 seconds after the last packet it carries on with what it was showing. Brightness, power and the current limiter still apply. Details in [docs/protocol.md](docs/protocol.md#streaming-input-ddp-and-e131).
+
+Set the sender up as **one matrix 128 wide, 192 high, RGB, rows left to right starting at the top-left corner, not serpentine** (the engine maps that onto the panel snake itself):
+
+- **WLED** (as a sender, e.g. a WLED instance or WLED's virtual DDP output): add a DDP output to the wall's IP with 24576 LEDs, start 0, RGB. As a 2D setup: one panel, 128 x 192, no serpentine.
+- **LedFx**: add a device of type DDP, IP address of the wall, port 4048, pixel count 24576. In the device's matrix settings use 128 columns (rows follow), no snake. LedFx sends sRGB-ish colours; keep "Streamed colours: sRGB (apply gamma)".
+- **xLights**: an Ethernet controller at the wall's IP, protocol DDP (port 4048) or E1.31. Model: a horizontal Matrix with **192 strings of 128 nodes** (each string is one row), starting top-left, not serpentine, RGB order. For E1.31: 145 universes of 510 channels starting at the wall's first universe (Settings, default 1), unicast.
+
+With E1.31, universe `start` carries pixels 0-169, `start+1` pixels 170-339, and so on; the 145th carries the last 96 pixels. Unicast needs nothing more. Multicast (`e131.multicast: true`) joins one group per universe, and Linux allows 20 per socket by default: raise it with `sudo sysctl -w net.ipv4.igmp_max_memberships=160` or send unicast.
+
+If colours look washed out or too dark, flip "Streamed colours" (`stream.apply_gamma`): on (default) treats the input as sRGB and applies the wall's gamma; off shows values as sent, for senders that already gamma-correct.
+
+## Home Assistant
+
+The web app connects to an MQTT broker (Settings > Integrations: host, port, username, password, optional TLS) and announces itself with MQTT discovery. In Home Assistant you get one device, "LED Poster", with:
+
+- a **light**: on/off, brightness, and an effect list with the wall's modes and every playlist (`Playlist: name`)
+- **Current draw** (A) and **Ambient light** (lx) sensors
+- a **Playlist** select
+
+Commands from HA go through the same code as the app's buttons, so the schedule and quiet-hours cap still apply. Settings shows the connection state ("Connected", or the error). The entities show as unavailable while the web app is disconnected from the broker and also while the engine is offline. HA's brightness is the user setting (the app's slider): during quiet hours the wall is capped below it, and HA still shows the value you asked for.
+
+Alexa, Google Home and Apple Home: expose the light through Home Assistant like any other light: Nabu Casa Cloud or the `alexa` / `google_assistant` integrations (Settings > Voice assistants > Expose), and the HomeKit Bridge integration (include the `light` domain or this entity). On/off and brightness work by voice; effects stay in HA.
+
+Topics (for scripts): `ledposter/<device_id>/availability`, `.../light/state` and `.../light/set` (HA JSON light schema), `.../sensors`, `.../playlist/state` and `.../playlist/set`. Discovery configs are under `homeassistant/`. `device_id` defaults to `ledposter_` plus the Pi's MAC address.
+
+## System (milestone 8)
+
+The wall is an appliance: two systemd services, a read-only root, an unprivileged web app, and root-side actions that are fixed units rather than sudo. `docs/ARCHITECTURE.md` has the contracts, `docs/DEVIATIONS.md` the reasoning where it bends the spec.
+
+**Processes.** `ledposter-engine.service` starts as soon as `/data` is mounted (before the network), as root until the matrix library has the GPIO, then as `ledposter`; it shows the boot screen until a mode is set and is restarted forever if it dies. `ledposter-web.service` runs as `ledposter` with only `CAP_NET_BIND_SERVICE` (port 80) and `ProtectSystem=strict`; it never waits for the network. Each survives the other crashing: `sudo systemctl kill -s KILL ledposter-web` leaves the wall running, `... ledposter-engine` leaves the app up saying "Engine offline" until the engine is back 2s later on its boot screen, and the app then restores the last mode.
+
+**Root-side actions.** The app runs as `ledposter` and has no sudo. What needs root is a fixed unit the user may start through polkit (`system/polkit/*.rules`), each reading its input from a file under `/data` the app wrote, validated by `system/bin/ledposter-sys`:
+
+| file | goes to | why |
+|---|---|---|
+| `system/systemd/ledposter-engine.service`, `ledposter-web.service` | `/etc/systemd/system/` | the two services |
+| `system/systemd/ledposter-boot.service` | same | at boot, before NetworkManager/Avahi: restore the hostname from `/data/state`, guard the overlay marker |
+| `system/systemd/ledposter-firewall.service` | same | `ledposter-sys firewall`: ufw reset + the rules in `/data/firewall.rules` (web app, `ledposter.system.firewall_rules`); at boot and on change |
+| `system/systemd/ledposter-ssh.service` | same | `ledposter-sys ssh`: sshd drop-in (keys only, no root) + `/data/ssh/authorized_keys`, starts or stops `ssh.service`; at boot and on change |
+| `system/systemd/ledposter-update.service` | same | `web/ledposter/updater.py run` as `ledposter`: update/rollback from `/data/app/update-request.json`; at boot it finishes an interrupted switch |
+| `system/systemd/ledposter-factory-reset.service` | same | `ledposter-sys factory-reset` when `/data/factory-reset` exists |
+| `system/systemd/ledposter-maintenance.timer` + `.service`, `ledposter-maintenance-resume.service` | same | hourly check of the security-update window; the two-reboot upgrade (below) |
+| `system/systemd/ledposter-net-rollback.timer` + `.service`, `ledposter-hosts.service` | same | milestone 6: DHCP rollback, `/etc/hosts` after a hostname change (now also persists it to `/data/state/hostname`) |
+| `system/polkit/49-ledposter-network.rules`, `50-ledposter-system.rules` | `/etc/polkit-1/rules.d/` | what the `ledposter` user may do: NetworkManager, hostname, start/restart exactly these units, reboot via logind |
+| `system/bin/ledposter-net`, `ledposter-sys` | `/usr/local/bin/` | the root-side scripts (`sh -n`, shellcheck clean) |
+| `system/avahi/ledposter.service` | `/etc/avahi/services/` | `_http._tcp` next to `<hostname>.local` |
+| `system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf` | `/etc/NetworkManager/dnsmasq-shared.d/` | captive DNS while the hotspot is up |
+| `system/etc/NetworkManager-ledposter.conf` | `/etc/NetworkManager/conf.d/` | DHCP client id = MAC for every profile, Wi-Fi power save off |
+| `system/etc/journald-ledposter.conf` | `/etc/systemd/journald.conf.d/` | journal in RAM (volatile, 32MB cap) |
+| `system/etc/apt-52ledposter` | `/etc/apt/apt.conf.d/` | unattended-upgrades: no periodic timers, kernel/firmware blacklisted |
+| `system/etc/sysctl-ledposter.conf` | `/etc/sysctl.d/` | `igmp_max_memberships=160` for E1.31 multicast |
+
+**Firewall.** `ufw` default deny incoming, allow outgoing (MQTT): HTTP (`web.port`), mDNS 5353/udp, DDP 4048/udp and E1.31 5568/udp only while enabled in Settings, SSH 22/tcp only in key-only mode, and the hotspot's DHCP/DNS (67, 53) on the Wi-Fi interface only. The rules are regenerated by the web app whenever the config changes and re-applied at every boot (ufw's own saved rules live on the overlay). `sudo ufw status` shows them.
+
+**SSH.** Settings > Security: Off, or Key only with the authorized keys in a textarea (the installer's `--ssh-key`, or your Imager key, is already there). Key only means `PasswordAuthentication no`, `KbdInteractiveAuthentication no`, `PermitRootLogin no`; log in as the user you installed with. Off stops `ssh.service` and keeps it off across reboots. The app refuses key-only with no key.
+
+**Software updates.** Settings > Software shows the running release (`git describe`), "Check for updates" (tags on the repo newer than the running one, read with the deploy key), "Update to X" and "Roll back to <previous>". An update: `git clone --branch <tag>` into `/data/app/releases/<tag>`, `make` the engine (minutes on a Pi 3B; the wall keeps showing), a venv with the requirements, `make test` and an import check, then the `current` symlink is switched atomically (temp link + rename), both services restart, and `/api/health` must report the new release with the engine answering within 90s, or it switches back and restarts again. Progress is in the banner at the top of Settings (`/data/app/update.json`, log in `/data/logs/update.log`). A half-built release is never `current`; a power cut at any step is finished or rolled back at the next boot. Releases that change files under `system/` (units, polkit, scripts) also need `sudo ledposter-sys overlay off`, a reboot, `sudo /data/app/current/system/install.sh`, and the overlay back on (`docs/DEVIATIONS.md`). From a shell: `sudo -u ledposter LEDPOSTER_DATA=/data python3 /data/app/current/web/ledposter/updater.py request update m9 && sudo systemctl start ledposter-update` and `updater.py status`.
+
+**Security updates (unattended-upgrades).** Weekly window in Settings > Software > Security updates (default Sunday 04:00, or Run now). The root is read-only, so the wall marks the window, turns the overlay off, reboots, installs Debian security updates on the real root while it keeps showing, turns the overlay back on and reboots again; about 5 minutes with two boot screens. Kernel and firmware packages are excluded (manual: `sudo ledposter-sys overlay off`, reboot, `sudo mount -o remount,rw /boot/firmware && sudo apt full-upgrade`, `sudo ledposter-sys overlay on`, reboot). Log: `/data/logs/maintenance.log`.
+
+**Restarts and factory reset.** Settings > Maintenance: Restart engine, Restart web app, Reboot. Factory reset at the bottom (confirmed twice, the hostname typed) erases config, media, tokens, sessions, logs, SSH keys, Wi-Fi profiles and the hostname, keeps the installed releases and the card password, writes a fresh config and reboots into the setup hotspot.
+
+**Logs.** `journalctl -b -u ledposter-engine` / `-u ledposter-web` for this boot (RAM; gone at reboot). Surviving: `/data/logs/web.log` (warnings and errors, rotated at 2MB x 3), `update.log`, `maintenance.log`. Nothing logs per frame.
 
 ## Testing milestone 2 on the Pi
 
@@ -203,10 +348,10 @@ cd ../web && .venv/bin/python -m pytest -q
 
 Expected: `all engine tests passed`, and pytest reports `18 passed` (the engine socket tests run against `build/ledengine-sim`).
 
-The engine starts as root (`sudo`) but the matrix library drops root right after it starts the panels; from then on the engine runs as `engine.user`:`engine.group` from the config (default `daemon`:`daemon`; milestone 8 sets up a dedicated `ledposter` user). The sockets, the I2C bus and the button line are opened before that, and the sockets (and `/run/ledposter`, if the engine made it) are handed to that user, mode 660. So that user needs:
+The engine starts as root (`sudo`) but the matrix library drops root right after it starts the panels; from then on the engine runs as `engine.user`:`engine.group` from the config (default `daemon`:`daemon`; the installer sets `ledposter`:`ledposter`). The sockets, the I2C bus and the button line are opened before that, and the sockets (and `/run/ledposter`, if the engine made it) are handed to that user, mode 660. So that user needs:
 
 - read access to `$LEDPOSTER_DATA` (`config.yaml` for `reload_config`, and the media). If your home dir is mode 700 (`ls -ld ~`), `chmod o+x ~`. The web app writes `config.yaml` mode 600, so after the web app has saved it `reload_config` fails unless the engine runs as the web app's user: for dev testing you can set `engine.user` and `engine.group` to the user that runs the web app (e.g. `pi`, which is already in `i2c`).
-- membership in group `i2c`, so the BH1750 can be reopened after an error (sensor unplugged): `sudo usermod -aG i2c daemon` for dev testing until milestone 8.
+- membership in group `i2c`, so the BH1750 can be reopened after an error (sensor unplugged): `sudo usermod -aG i2c daemon` for dev testing without the installer.
 - the web app must run as a user in `engine.group`, or as root, to connect to the sockets.
 
 Tags m3 to m5 predate this: there the engine created its sockets and opened I2C after the drop, so on the Pi it had no control socket. When testing those tags, set `engine.socket` and `engine.preview_socket` to `/tmp/ledposter/engine.sock` and `/tmp/ledposter/frames.sock` (and use those paths below), or test from m6 on.
@@ -242,60 +387,6 @@ Things to check and report (paste the `status` lines):
 9. **Reload**: edit `brightness.user` in `$LEDPOSTER_DATA/config.yaml`, then `ctl '{"cmd":"reload_config"}'` applies it (`restart_needed: []`). Change `gpio_slowdown` and reload: `restart_needed: ["matrix"]`.
 
 With all six panels use `config.example.yaml` as is (13A ceiling): full white shows `est 12.96A (limited), brightness 36%`.
-## Web app
-
-```sh
-cd web
-.venv/bin/pip install -r requirements.txt
-LEDPOSTER_DATA=~/lpdata .venv/bin/python -m ledposter --port 8080   # port defaults to config web.port
-```
-
-Open `http://<pi>:8080/`. The first visit asks for an admin password (stored as a scrypt hash in `config.yaml`); everything under `/api` and the app itself need the session cookie or an API token (`Authorization: Bearer lp_...`, created in Settings). The API is documented at `/docs` (OpenAPI at `/openapi.json`); every button in the UI is one of those endpoints. The live preview is a WebSocket at `/api/preview`: one text message with the engine status, then one binary frame of `w*h*3` RGB bytes, up to 15 a second.
-
-Uploads go to `$LEDPOSTER_DATA/media/<id>/` and are transcoded one at a time by a background worker with `ledposter.transcode`; the item's settings (scale, filter, crop, position, speed, dither) can be changed in the editor, which re-transcodes. Playlists are written to the config's `playlists:` section in the engine's format, followed by `reload_config`. The schedule (on/off times, quiet-hours brightness cap) is enforced by the web app's own scheduler task. If the engine is down the app keeps working for the library and settings and shows "engine offline" until it reconnects.
-
-The Modes screen is built from the engine's `list_modes` (`GET /api/modes`): media, the six effects, clock, text, idle and the test patterns, each with its settings sheet (speed slider, colour list, text with a character count, toggles). Changes apply live. While the engine is offline it shows the last list it got.
-
-### Game hook
-
-`POST /api/event` with `{"event": "kill"}` (also `killstreak`, `death`, `win`) plays a 1.5 to 3s overlay on top of whatever the wall shows. Use an API token from Settings (`Authorization: Bearer lp_...`). Unknown events get a 400; more than 10 events in 5 seconds from one token get a 429. From a PC, `tools/game_hook.py` sends them (Python 3.8+, no packages):
-
-```sh
-export LEDPOSTER_URL=http://ledposter.local LEDPOSTER_TOKEN=lp_...
-python3 tools/game_hook.py kill
-your-detector | python3 tools/game_hook.py --stdin    # one event name per line
-```
-
-How a game's kills and deaths are detected is up to you (out of scope for v1): call `game_hook.send("kill")` from your own script, or print event names into `--stdin`.
-
-Dev without a Pi: `python tests/fake_engine.py /tmp/lpsock` serves the two sockets with a moving test image; point `engine.socket`/`engine.preview_socket` at them. Or build the real engine with `cd engine && make sim`. `LEDPOSTER_FAKE_NET=1` (or `offline`) swaps NetworkManager for `tests/fake_net.py`, so the Wi-Fi setup and static IP screens can be exercised on a laptop without touching its network; `offline` boots "without a known network" and raises the (fake) hotspot after `network.setup_timeout_s`.
-
-### Networking (milestone 6)
-
-Everything that touches the OS goes through `web/ledposter/net.py`, which shells out to `nmcli`, `hostnamectl`, `systemctl` and `ping` (NetworkManager is Bookworm's default; dhcpcd is not used). The wall is reached by name:
-
-- **`ledposter.local`**: Avahi advertises the hostname and an `_http._tcp` service (`system/avahi/ledposter.service`). Settings > Hostname changes it (one RFC 1123 label); `hostnamectl` sets it and `ledposter-hosts.service` rewrites `/etc/hosts` as root; Avahi follows.
-- **DHCP by default**, with `ipv4.dhcp-client-id mac` and `ipv4.dhcp-send-hostname yes` set on every Wi-Fi profile the app creates or joins, so routers hand back the same lease. Settings explains how to add a DHCP reservation and shows the MAC.
-- **Static IP** (Settings > IP address): validated against the current subnet (inside the network, not the network/broadcast address, gateway in the subnet, address not already answering a ping). Before it is applied the app writes `$LEDPOSTER_DATA/net-rollback` and restarts `ledposter-net-rollback.timer` (120s); then it applies the address 1.5s after answering, and the browser is sent to `http://<new ip>/#/settings/confirm`. Signing in there and tapping "Keep this address" (`POST /api/network/static/confirm`) stops the timer. Otherwise `ledposter-net rollback` runs as root and puts the connection back on DHCP, whether or not the web app is alive.
-- **IP on the wall**: hostname and IP for `network.show_ip_s` seconds when the web app starts and the engine and network are up, and from Settings > "Show address on the wall" (`POST /api/network/show_ip`). A double button press is the planned trigger (docs/DEVIATIONS.md).
-- **First-time setup**: no Wi-Fi or Ethernet within `network.setup_timeout_s` of the web app starting, or the engine reporting a 10s button hold (`wifi_setup_requested`), or Settings > "Start Wi-Fi setup hotspot": the app scans (one radio, so before the AP is up), then raises the WPA2 hotspot `LEDWall-Setup` with the password in `$LEDPOSTER_DATA/setup-password` (created at install and printed on the card; created on first start if missing, with a log line saying where). NM shared mode runs dnsmasq; `system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf` resolves every name to `10.42.0.1`, and the app answers the OS connectivity probes (`/hotspot-detect.html`, `/generate_204`, `/connecttest.txt`, `/ncsi.txt`, ...) with a redirect to `/setup`, so the phone opens the portal by itself. The wizard: admin password first on a fresh wall, then the network list (signal and lock icons; Refresh drops the hotspot for ~15s), the network's password, and a 4-step progress screen. Joining switches the hotspot off; on failure it comes back with the reason. The wall shows each step as text: hotspot up, joining, joined with IP, or failed with the reason.
-- **Auth**: the setup endpoints are open without login only while the hotspot is up on a wall that has no admin password yet. Everything else always needs the session or a token. Threat model in docs/DEVIATIONS.md.
-
-All of it is in the API under `network` at `/docs`: `GET /api/network`, `PUT /api/network/hostname`, `POST /api/network/static`, `/static/confirm`, `/dhcp`, `/show_ip`, `GET /api/network/setup`, `/setup/start`, `/setup/stop`, `GET /api/network/wifi`, `/wifi/scan`, `/wifi/join`.
-
-### System files (installed by milestone 8)
-
-| file | goes to | why |
-|---|---|---|
-| `system/avahi/ledposter.service` | `/etc/avahi/services/` | `_http._tcp` service next to `<hostname>.local` |
-| `system/NetworkManager/dnsmasq-shared.d/ledposter-captive.conf` | `/etc/NetworkManager/dnsmasq-shared.d/` | captive DNS while the hotspot is up (only then: NM starts this dnsmasq for shared connections) |
-| `system/polkit/49-ledposter-network.rules` | `/etc/polkit-1/rules.d/` | lets the `ledposter` service user drive NetworkManager, set the hostname, and start/stop the two units below. No sudoers needed |
-| `system/systemd/ledposter-net-rollback.timer` + `.service` | `/etc/systemd/system/` | 120s revert-to-DHCP timer, armed by the app before a static IP; the service runs the script as root |
-| `system/systemd/ledposter-hosts.service` | `/etc/systemd/system/` | rewrites `127.0.1.1` in `/etc/hosts` after a hostname change |
-| `system/bin/ledposter-net` | `/usr/local/bin/` | the root-side script those two services run (`rollback`, `hosts`); `bash -n` clean |
-
-Until M8, run the web app as root with those files installed by hand (see the M6 test section). The `ledposter` user does not exist yet.
-
 ## Testing milestone 4 on the Pi
 
 Pull, install the new Python packages and run the tests:
@@ -308,7 +399,7 @@ cd web && .venv/bin/pip install -r requirements.txt
 
 Expected: `46 passed` (transcoder, auth, config, media, playlists, schedule, preview relay against a fake engine).
 
-Start the engine (M3) and then the web app on port 8080 (systemd units come in M8), with the same data dir:
+Start the engine (M3) and then the web app on port 8080 (or the systemd units from the installer), with the same data dir:
 
 ```sh
 export LEDPOSTER_DATA=~/lpdata
@@ -390,7 +481,7 @@ cd ~/ledposter && git pull && git submodule update
 cd web && .venv/bin/pip install -r requirements.txt && .venv/bin/python -m pytest -q
 ```
 
-Expected: `91 passed` (networking tests run against a fake NetworkManager; nothing on the Pi's network is touched by the tests. Needs `build/ledengine-sim` from `cd engine && make sim` for the engine socket tests, else they are skipped). Then install the M6 system files by hand (M8 scripts this) and check the tools are there:
+Expected: `91 passed` (networking tests run against a fake NetworkManager; nothing on the Pi's network is touched by the tests. Needs `build/ledengine-sim` from `cd engine && make sim` for the engine socket tests, else they are skipped). Then install the M6 system files by hand (`system/install.sh` does all of this on an installed wall) and check the tools are there:
 
 ```sh
 sudo apt install -y avahi-daemon network-manager   # both already on Raspberry Pi OS Bookworm
@@ -403,7 +494,7 @@ sudo systemctl daemon-reload
 nmcli -t -f DEVICE,TYPE,STATE,CONNECTION device status      # wlan0:wifi:connected:<your network>
 ```
 
-Create the card password once, then start the engine and the web app as root for now (root needs no polkit; the `ledposter` user comes with M8). Port 80 so `http://ledposter.local` works without a port:
+Create the card password once, then start the engine and the web app as root for now (root needs no polkit; the installer creates the `ledposter` user and the units). Port 80 so `http://ledposter.local` works without a port:
 
 ```sh
 export LEDPOSTER_DATA=~/lpdata
@@ -435,34 +526,6 @@ nmcli device wifi list                                  # what the Pi can see (2
 
 `sudo /usr/local/bin/ledposter-net rollback` does the DHCP revert from the note file by hand, and `journalctl -u NetworkManager -n 50` explains failed joins.
 
-## Streaming input (WLED, LedFx, xLights)
-
-The engine has a DDP receiver on UDP 4048 and an E1.31/sACN receiver on UDP 5568, both off by default. Turn them on in Settings > Integrations (or `ddp: {enabled: true}` / `e131: {enabled: true}` in the config). While frames arrive they replace whatever the wall shows; 5 seconds after the last packet it carries on with what it was showing. Brightness, power and the current limiter still apply. Details in [docs/protocol.md](docs/protocol.md#streaming-input-ddp-and-e131).
-
-Set the sender up as **one matrix 128 wide, 192 high, RGB, rows left to right starting at the top-left corner, not serpentine** (the engine maps that onto the panel snake itself):
-
-- **WLED** (as a sender, e.g. a WLED instance or WLED's virtual DDP output): add a DDP output to the wall's IP with 24576 LEDs, start 0, RGB. As a 2D setup: one panel, 128 x 192, no serpentine.
-- **LedFx**: add a device of type DDP, IP address of the wall, port 4048, pixel count 24576. In the device's matrix settings use 128 columns (rows follow), no snake. LedFx sends sRGB-ish colours; keep "Streamed colours: sRGB (apply gamma)".
-- **xLights**: an Ethernet controller at the wall's IP, protocol DDP (port 4048) or E1.31. Model: a horizontal Matrix with **192 strings of 128 nodes** (each string is one row), starting top-left, not serpentine, RGB order. For E1.31: 145 universes of 510 channels starting at the wall's first universe (Settings, default 1), unicast.
-
-With E1.31, universe `start` carries pixels 0-169, `start+1` pixels 170-339, and so on; the 145th carries the last 96 pixels. Unicast needs nothing more. Multicast (`e131.multicast: true`) joins one group per universe, and Linux allows 20 per socket by default: raise it with `sudo sysctl -w net.ipv4.igmp_max_memberships=160` or send unicast.
-
-If colours look washed out or too dark, flip "Streamed colours" (`stream.apply_gamma`): on (default) treats the input as sRGB and applies the wall's gamma; off shows values as sent, for senders that already gamma-correct.
-
-## Home Assistant
-
-The web app connects to an MQTT broker (Settings > Integrations: host, port, username, password, optional TLS) and announces itself with MQTT discovery. In Home Assistant you get one device, "LED Poster", with:
-
-- a **light**: on/off, brightness, and an effect list with the wall's modes and every playlist (`Playlist: name`)
-- **Current draw** (A) and **Ambient light** (lx) sensors
-- a **Playlist** select
-
-Commands from HA go through the same code as the app's buttons, so the schedule and quiet-hours cap still apply. Settings shows the connection state ("Connected", or the error). The entities show as unavailable while the web app is disconnected from the broker and also while the engine is offline. HA's brightness is the user setting (the app's slider): during quiet hours the wall is capped below it, and HA still shows the value you asked for.
-
-Alexa, Google Home and Apple Home: expose the light through Home Assistant like any other light: Nabu Casa Cloud or the `alexa` / `google_assistant` integrations (Settings > Voice assistants > Expose), and the HomeKit Bridge integration (include the `light` domain or this entity). On/off and brightness work by voice; effects stay in HA.
-
-Topics (for scripts): `ledposter/<device_id>/availability`, `.../light/state` and `.../light/set` (HA JSON light schema), `.../sensors`, `.../playlist/state` and `.../playlist/set`. Discovery configs are under `homeassistant/`. `device_id` defaults to `ledposter_` plus the Pi's MAC address.
-
 ## Testing milestone 7 on the Pi
 
 Pull, update the venv (paho-mqtt 2.x comes from pip; Bookworm's apt has 1.6), build and test:
@@ -476,7 +539,7 @@ cd ../web && .venv/bin/pip install -r requirements.txt
 
 Expected: `all engine tests passed`, and pytest reports `108 passed, 1 skipped` (the skipped test needs a `mosquitto` binary; with `sudo apt install -y mosquitto` it is `109 passed`).
 
-**Streaming input.** Start the engine and the web app as for milestone 6. In the app, Settings > Integrations: turn on DDP input and E1.31 input, Save. The engine log says `ddp: listening on UDP 4048` and `e131: listening on UDP 5568, universes 1 to 145` (`1 to 2` on the single 64x64 panel), and `status` has `"stream": {..., "ddp": true, "e131": true}`. If `ufw` is on (it is from milestone 8), `sudo ufw allow 4048/udp` and `sudo ufw allow 5568/udp` first.
+**Streaming input.** Start the engine and the web app as for milestone 6. In the app, Settings > Integrations: turn on DDP input and E1.31 input, Save. The engine log says `ddp: listening on UDP 4048` and `e131: listening on UDP 5568, universes 1 to 145` (`1 to 2` on the single 64x64 panel), and `status` has `"stream": {..., "ddp": true, "e131": true}`. On an installed wall the firewall opens 4048 and 5568 by itself when you enable them in Settings.
 
 From a laptop on the same network, either:
 
@@ -533,6 +596,25 @@ Expected:
 
 Report: the stream fps from LedFx, how the colours look with and without gamma, and anything HA showed differently from the above.
 
+## Testing milestone 8 on the Pi
+
+This is the first milestone tested from a **fresh SD card** with the installer, not from a checkout in your home directory. Follow [Install on a fresh Pi](#install-on-a-fresh-pi-milestone-8) up to the reboot, with `--ssh-key` so you keep a shell. Then, on your computer, `cd engine && make test && make sim; cd ../web && .venv/bin/python -m pytest -q` should say `all engine tests passed` and `143 passed, 1 skipped` (`144 passed` with a `mosquitto` binary installed); `shellcheck system/install.sh system/bin/* tools/acceptance.sh` is clean.
+
+Check and report, in this order:
+
+1. **Cold boot.** Power off, power on with a stopwatch. The boot screen (`LED POSTER`, spinner) appears; note the seconds. The hostname and IP follow once the web app is up. `ssh you@ledposter.local`, then `systemd-analyze` and `journalctl -b -u ledposter-engine -o short-monotonic | grep 'first frame'`. Target under 30s on the stopwatch. `systemctl status ledposter-engine ledposter-web` both `active (running)`, `ps -o user,comm -C ledengine` shows `ledposter` (dropped root), `ps -o user,comm -C python` shows `ledposter`.
+2. **Read-only root.** `cat /proc/cmdline` contains `overlayroot=tmpfs` (or `boot=overlay`), `findmnt /` shows `overlay`, `findmnt /data` shows `ext4 ... noatime`, `sudo touch /etc/x` works but is gone after a reboot, `touch /data/x` survives. `sudo ledposter-sys overlay status`.
+3. **Last mode comes back.** In the app pick Fire. Reboot. After the boot screen the wall shows Fire again without touching the app. Pull the plug mid-playback 5 times at random moments: every time it comes back on the same mode; `sudo /data/app/current/tools/acceptance.sh health` is green.
+4. **Crash isolation.** `sudo systemctl kill -s KILL ledposter-web`: the wall keeps showing; the app is unreachable for about 2s and then loads again. `sudo systemctl kill -s KILL ledposter-engine`: the app shows "Engine offline", the wall goes dark, 2s later the boot screen, then the last mode again.
+5. **Firewall.** `sudo ufw status verbose`: deny incoming, allow outgoing, 80/tcp, 5353/udp, 22/tcp (key-only), 67/53 on wlan0, no 4048/5568. From your laptop `nmap -p 22,80,4048,5568 ledposter.local` (or `nc -zv`): 22 and 80 open, the rest filtered. Settings > Integrations > DDP on, Save: `sudo ufw status` now lists 4048/udp within a second (`journalctl -u ledposter-firewall`). Hotspot: Settings > Start Wi-Fi setup hotspot, join it from a phone: the captive portal opens (DHCP and DNS pass). Join your network again from the portal.
+6. **SSH.** Settings > Security: your key is listed, mode Key only. `ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password you@ledposter.local` is refused (`Permission denied (publickey)`), `ssh root@ledposter.local` too. Add a second key, Save, log in with it. Switch to Off, Save: `ssh` says connection refused, and still after a reboot; switch back on from the app.
+7. **Updates.** Make sure the deploy key is on GitHub (install step 5). Settings > Software > Check for updates: on the m8 wall it says you are on the latest release; "All releases" lists m1 to m8. Pick an older tag under All releases (m7): confirm; the banner walks through Fetching, Building (a few minutes), Testing, Switching, Restarting, Checking, then "Updated: Running m7" with Reload; the wall showed its boot screen briefly during the restart and came back on the last mode. The version row says m7, "Roll back to m8" appears; tap it: switching, restarting, checking, back on m8 within a minute. Then a failing update: `sudo mkdir -p /data/app/releases/m9x && sudo chown ledposter /data/app/releases/m9x` is not needed; instead simulate a bad release with `POST /api/system/update {"target":"nonexistent-tag"}` (from `/docs`): the banner ends red with `git clone failed` and the wall is untouched. Report the build time. Pull the plug during a Building step: after the boot the update continues (`journalctl -u ledposter-update`) and finishes. Pull it during Restarting/Checking: at boot the health check runs and keeps or rolls back.
+8. **Security-update window.** Settings > Software > Security updates: set the day/hour to a few minutes from now (or Run now). The wall reboots, comes back with the root writable (`findmnt /`), `journalctl -u ledposter-maintenance-resume -f` shows `apt-get update` and `unattended-upgrade`, then it reboots again with the overlay on. `cat /data/logs/maintenance.log`. About 5 minutes total; the wall showed the last mode in between.
+9. **Factory reset.** Settings > Factory reset > Continue > type `ledposter` > Erase everything. The wall shows `Factory reset...`, reboots, and about a minute later shows the `Wi-Fi setup / Join LEDWall-Setup` text. Set it up again from a phone with the card password as in milestone 6 (stopwatch: acceptance criterion 7, under 3 minutes). `ls /data` shows a fresh `config.yaml`, empty `media`, the same `setup-password`, `app/` intact; `ssh` is off (default) until you turn it on in Settings.
+10. **Acceptance run.** `sudo LEDPOSTER_PASSWORD=... /data/app/current/tools/acceptance.sh` and the eyes-on items in `docs/ACCEPTANCE.md`. Record the table.
+
+Report: the stopwatch boot time and the `first frame` seconds, the update build time, the maintenance window duration, the acceptance table, and anything the installer printed that was unclear.
+
 ## Troubleshooting
 
 - **Blank panel with `adafruit-hat-pwm`**: the GPIO4 to GPIO18 mod isn't there. Use `adafruit-hat`.
@@ -566,3 +648,13 @@ Report: the stream fps from LedFx, how the colours look with and without gamma, 
 - **`ddp: UDP port 4048: bind: Address already in use`**: another program (or another engine) has the port.
 - **MQTT "Error: Not authorized" / "Bad user name or password"**: check the broker user in Settings. "can't reach host:port": broker host, port, or TLS on a plain port (1883) or off on a TLS port (8883).
 - **HA shows the device but it's unavailable**: the engine is offline, or the web app isn't connected; see Settings.
+- **Boot takes longer than 30s to the first frame**: `systemd-analyze blame | head` shows what is slow. The installer disables Bluetooth, ModemManager, triggerhappy, swap and the apt timers; anything else enabled since (`systemctl list-unit-files --state=enabled`) is a candidate. A slow SD card (class 4) adds seconds everywhere; `isolcpus=3` must be in `/proc/cmdline`.
+- **`install.sh` says "No room for the data partition"**: the root filled the card on first boot. See step 2 of the install (remove `init_resize.sh` from `cmdline.txt` before the first boot) and `docs/DEVIATIONS.md` for the alternatives.
+- **The wall sits on the boot screen forever**: the web app is not up (`systemctl status ledposter-web`, `journalctl -b -u ledposter-web`), or the last mode cannot be restored (a deleted media item: pick a mode in the app once).
+- **Something written to `/etc` or `/home` is gone after a reboot**: that is the overlay. Put it under `/data`, or `sudo ledposter-sys overlay off`, reboot, change, `overlay on`, reboot.
+- **Wi-Fi forgotten after a reboot**: `/etc/NetworkManager/system-connections` must be the bind mount of `/data/state/nm` (`findmnt /etc/NetworkManager/system-connections`); re-run the installer with the overlay off if it is missing.
+- **"Check for updates" says Permission denied (publickey)**: the deploy key in `/data/app/deploy_key.pub` is not on the repo (GitHub > Settings > Deploy keys), or `/data/app/origin` is not the repo's ssh URL.
+- **An update failed and the app is gone**: the updater rolls back by itself within about 2 minutes; if the wall stays dark, `journalctl -u ledposter-update` and `cat /data/app/update.json` over SSH; `sudo -u ledposter python3 /data/app/current/web/ledposter/updater.py request rollback && sudo systemctl start ledposter-update` switches back by hand.
+- **Locked out of SSH**: Settings > Security turns it back on (the app does not need SSH). No app either: keyboard + HDMI, `sudo ledposter-sys overlay off`, reboot, `echo key-only | sudo tee /data/ssh/mode`, your key into `/data/ssh/authorized_keys`, `sudo ledposter-sys ssh`.
+- **Maintenance window left the root writable**: a failure between the upgrade and re-enabling the overlay. `sudo ledposter-sys overlay status`; `sudo ledposter-sys overlay on` and reboot. `ledposter-boot.service` also repairs this at the next boot when `/data/state/overlay-wanted` exists.
+- **`ufw` blocks something you added**: the rules are regenerated from the config by the web app; add ports in `ledposter.system.firewall_rules` (and the regex in `ledposter-sys`), not with `ufw allow` (lost at reboot and overwritten).

@@ -40,6 +40,8 @@ case "${1:-}" in
     fi
     # avahi-daemon follows hostnamed on its own; the restart only covers builds that do not
     systemctl try-restart avahi-daemon.service 2>/dev/null || true
+    # /etc/hostname is on the read-only overlay (M8): ledposter-sys boot restores it from here
+    mkdir -p "$data/state" && echo "$name" > "$data/state/hostname"
     echo "ledposter-net: /etc/hosts now maps 127.0.1.1 to $name"
     ;;
   *)

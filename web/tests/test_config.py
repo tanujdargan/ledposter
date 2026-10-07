@@ -26,7 +26,7 @@ def test_save_is_atomic_and_private(tmp_path):
     cfg["version"] = 3
     cfg["web"]["admin_password"] = "scrypt$x"
     config.save(cfg, str(p))
-    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert stat.S_IMODE(p.stat().st_mode) == 0o640  # group ledposter: the engine reads it after dropping root
     text = p.read_text()
     assert text.startswith("version: 3\n")  # version preserved, first
     assert yaml.safe_load(text)["web"]["admin_password"] == "scrypt$x"

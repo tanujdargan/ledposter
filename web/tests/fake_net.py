@@ -90,12 +90,17 @@ class FakeNet:
         return 0, "", ""
 
     def _systemctl(self, a):
-        verb, unit = a[0], a[1]
+        a = [x for x in a if not x.startswith("--")]  # --no-block
+        verb, unit = a[0], a[1] if len(a) > 1 else None
         self.units.append((verb, unit))
+        if verb == "reboot":
+            return 0, "", ""
         if unit == "ledposter-net-rollback.timer":
             self.timer_active = verb in ("start", "restart")
         elif unit == "ledposter-hosts.service":
             self.hosts_synced = self.hostname
+        elif unit and unit.startswith("ledposter-") and unit.endswith(".service"):
+            pass  # M8 fixed units: start/restart recorded, nothing to simulate
         else:
             return 5, "", f"Failed to {verb} {unit}: Unit {unit} not found."
         return 0, "", ""

@@ -270,12 +270,12 @@ def test_errors(engine):
         ("set_mode", {"mode": "media", "media": "missing"}, "no meta.json"),
         ("set_mode", {"mode": "media", "media": "../etc"}, "bad media id"),
         ("set_mode", {"mode": "playlist", "playlist": "nope"}, "no playlist 'nope'"),
-        ("set_mode", {"mode": "dance"}, "mode must be pattern, media, playlist, effect, clock, text or idle"),
+        ("set_mode", {"mode": "dance"}, "mode must be pattern, media, playlist, effect, clock, text, idle or boot"),
         ("set_fake_lux", {"lux": -1}, "'lux' must be a number"),
     ]:
         r = e.ctl(cmd, **args)
         assert r["ok"] is False and msg in r["error"], (cmd, r)
-    assert e.ctl.ok("status")["mode_name"] == "panel-id"  # nothing applied
+    assert e.ctl.ok("status")["mode_name"] == "boot"  # nothing applied (no flag: the M8 boot screen)
 
 
 def test_reload_config(engine):

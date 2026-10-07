@@ -1,0 +1,21 @@
+# Restores the state that lives in /data because the root filesystem is a read-only overlay
+# whose writes vanish at reboot: the hostname (Settings > Hostname writes /etc/hostname,
+# which is on the overlay) and a finished maintenance window. Before NetworkManager and
+# Avahi so <hostname>.local is right from the start. Installed by system/install.sh.
+[Unit]
+Description=LED wall: restore persisted system state
+DefaultDependencies=no
+RequiresMountsFor=/data
+After=local-fs.target
+Before=NetworkManager.service avahi-daemon.service systemd-hostnamed.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+Environment=LEDPOSTER_DATA=/data
+ExecStart=/usr/local/bin/ledposter-sys boot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

@@ -320,6 +320,31 @@ inline Mode clock_mode(const FontSet &fonts, ClockStyle s) {
           }};
 }
 
+// Boot screen (milestone 8): what the wall shows from the engine's first frame
+// until the web app restores the last mode. "LED POSTER" with a spinner of
+// eight dots turning under it, so a wall that is stuck here is visibly alive.
+inline Mode boot_mode(const FontSet &fonts, int w, int h) {
+  return {"boot", true, [&fonts, w, h](Frame &f, int64_t t) -> int64_t {
+            f.fill(0, 0, 0);
+            const int margin = std::max(2, w / 32), r = std::max(4, std::min(w, h) / 10);
+            const TextFit fit = fit_text(fonts, "LED POSTER", w - 2 * margin, h / 2,
+                                         {{"10x20", 2}, {"9x18B", 2}, {"10x20", 1}, {"9x18B", 1},
+                                          {"7x13B", 1}, {"6x10", 1}, {"5x8", 1}, {"tom-thumb", 1}});
+            const int total = fit.h + r + 2 * r + 2, top = (h - total) / 2;
+            draw_fit(fit, w / 2, top, w, frame_plot(f, {255, 176, 32}));
+            const int cx = w / 2, cy = top + fit.h + r + r + 1, step = int(t / 100) % 8;
+            const int dot = r >= 8 ? 2 : 1;
+            for (int i = 0; i < 8; i++) {
+              const float a = float(i) * float(M_PI) / 4, k = 0.15f + 0.85f * (((i - step) % 8 + 8) % 8) / 7.0f;
+              const int x = int(std::lround(cx + r * std::sin(a))), y = int(std::lround(cy - r * std::cos(a)));
+              for (int dy = 0; dy < dot; dy++)
+                for (int dx = 0; dx < dot; dx++)
+                  f.set(x + dx, y + dy, uint8_t(255 * k), uint8_t(176 * k), uint8_t(32 * k));
+            }
+            return (t / 100 + 1) * 100;
+          }};
+}
+
 // Idle screen: a dark, slow plasma in deep blues (level: how bright, 0..1)
 // with a dim clock on top. Meant for "on but nobody's watching".
 inline Mode idle_mode(const FontSet &fonts, int w, int h, bool show_clock, double level,

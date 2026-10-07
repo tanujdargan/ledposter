@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from python_multipart import MultipartParser
 
-from . import __version__, auth, config, mqtt, net, schedule, wifisetup
+from . import __version__, auth, config, mqtt, net, schedule, sysapi, system, wifisetup
 from .engine import Engine, EngineError, EngineOffline, mode_args
 from .media import Library
 from .transcode import MAX_BYTES, SUPPORTED
@@ -444,13 +444,15 @@ class HostnameSet(BaseModel):
 
 # -- app -----------------------------------------------------------------------------
 
-def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
+def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_runner=None):
     """`net_runner` replaces the subprocess runner for nmcli & co (tests, LEDPOSTER_FAKE_NET);
-    `mqtt_client_factory` the paho client (tests)."""
+    `mqtt_client_factory` the paho client (tests); `git_runner` the one for `git ls-remote`
+    (checking for updates)."""
     data_dir = data_dir or config.data_dir()
     app = FastAPI(title="ledposter", version=__version__, description=DESCRIPTION,
                   openapi_tags=[{"name": "auth"}, {"name": "control"}, {"name": "media"},
-                                {"name": "playlists"}, {"name": "schedule"}, {"name": "settings"}, {"name": "network"}])
+                                {"name": "playlists"}, {"name": "schedule"}, {"name": "settings"}, {"name": "network"},
+                                {"name": "system"}])
     st = app.state
     st.data_dir = data_dir
     st.cfg_path = os.path.join(data_dir, "config.yaml")
@@ -468,9 +470,13 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
     st.setup = wifisetup.WifiSetup(st.net, st.engine.show_text, data_dir, ssid=ncfg["hotspot_ssid"],
                                    timeout_s=float(ncfg["setup_timeout_s"]), show_ip_s=int(ncfg["show_ip_s"]))
     st.net_task = None  # pending static/DHCP apply, delayed so the browser gets its response first
+    # M8: root-side units (firewall, SSH, update, factory reset) and the last-mode restore
+    st.system = system.System(net_runner or net.run_subprocess, data_dir, hotspot_iface=st.net.wifi_device,
+                              git=git_runner)
 
     def save():
         config.save(st.cfg, st.cfg_path)
+    st.save = save
 
     def save_soon(delay=1.5):
         """Coalesces slider drags into one write."""
@@ -492,6 +498,17 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
 
     st.scheduler = schedule.Scheduler(lambda: st.cfg["schedule"], lambda: st.cfg["brightness"]["user"],
                                       engine_send)
+    st.lastmode = system.LastMode(lambda: st.cfg.get("last_mode"), engine_send,
+                                  lambda mid: (st.library.get(mid) or {}).get("status") == "ready")
+
+    async def lastmode_loop():
+        """The engine boots on its boot screen; send it the last mode once it is up."""
+        while True:
+            try:
+                await st.lastmode.tick(st.engine.status if st.engine.online else None)
+            except Exception:
+                log.exception("last mode restore")
+            await asyncio.sleep(2)
 
     async def reload():
         """reload_config after a config write. The engine re-reads brightness.user from the
@@ -518,7 +535,12 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
     async def lifespan(app):
         await st.engine.start()
         await st.library.start()
-        tasks = [asyncio.create_task(schedule_loop()), asyncio.create_task(st.setup.loop(st.engine))]
+        try:  # firewall/SSH inputs follow the config; apply them if they changed while we were down
+            await st.system_sync()
+        except Exception as e:
+            log.warning("system files not synced: %s", e)
+        tasks = [asyncio.create_task(schedule_loop()), asyncio.create_task(st.setup.loop(st.engine)),
+                 asyncio.create_task(lastmode_loop())]
         await st.mqtt.apply(st.cfg["mqtt"])
         yield
         await st.mqtt.stop()
@@ -730,6 +752,8 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
         if args["mode"] == "playlist" and args.get("playlist") not in st.cfg["playlists"]:
             raise HTTPException(404, "No such playlist")
         await engine_call("set_mode", **mode_args(args))
+        st.cfg["last_mode"] = mode_args(args)  # restored after a reboot (the engine boots on its boot screen)
+        save()
 
     st.mqtt = mqtt.Bridge(SimpleNamespace(
         power=act_power, brightness=act_brightness, mode=act_mode, snapshot=snapshot,
@@ -861,6 +885,8 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
 
         def on_part_end():
             if up["file"]:
+                up["file"].flush()
+                os.fsync(up["file"].fileno())  # the source must survive a power cut before its transcode
                 up["file"].close()
                 up["file"] = None
             elif up["name"]:
@@ -1039,6 +1065,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
                 stream_error = str(e)
         needed = await reload()
         await st.mqtt.apply(st.cfg["mqtt"])
+        await st.system_sync()  # DDP/E1.31 on/off changes the firewall
         restart = bool(needed) or before.matrix != body.matrix
         return SettingsSaved(**body.model_dump(), restart_required=restart, stream_error=stream_error)
 
@@ -1060,6 +1087,8 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None):
             except Exception:
                 log.exception("network change")
         st.net_task = asyncio.create_task(later())
+
+    sysapi.install(app, st, require_auth, apply_later)  # /api/system/*, /api/health (M8)
 
     def network_model(s):
         rb = st.net.rollback_pending()

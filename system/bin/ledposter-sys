@@ -1,0 +1,229 @@
+#!/bin/sh
+# Root-side helpers for the LED wall's system actions (milestone 8), run by the units in
+# system/systemd. Installed as /usr/local/bin/ledposter-sys. Every action reads its input from
+# a file under $LEDPOSTER_DATA that the web app wrote (ledposter.system), validates it, and
+# never takes arguments from the app itself.
+#
+#   ledposter-sys firewall          apply $data/firewall.rules with ufw (reset, rules, enable)
+#   ledposter-sys ssh               apply $data/ssh/mode (+ authorized_keys): sshd drop-in, start/stop ssh
+#   ledposter-sys boot              at boot: restore the hostname from $data/state, guard the overlay
+#   ledposter-sys hostname NAME     set the hostname now and persist it (installer, factory reset)
+#   ledposter-sys factory-reset     if $data/factory-reset exists: wipe, fresh config, reboot into setup
+#   ledposter-sys maintenance timer|now|resume   the unattended-upgrades window (docs/DEVIATIONS.md)
+#   ledposter-sys overlay on|off|status          the read-only root overlay (raspi-config)
+set -eu
+
+data="${LEDPOSTER_DATA:-/data}"
+state="$data/state"
+# Mirrors ledposter.system.RULE_RE / KEY_RE: the only lines accepted from the app's files.
+rule_re='^(default (deny|allow) (incoming|outgoing)|logging off|allow [0-9]{1,5}/(tcp|udp)|allow in on [a-z0-9.-]{1,15} to any port [0-9]{1,5} proto (tcp|udp))$'
+key_re='^(sk-)?(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521))(@openssh\.com)? AAAA[A-Za-z0-9+/]+={0,3}( [^ ].*)?$'
+
+say() { echo "ledposter-sys: $*"; }
+die() { echo "ledposter-sys: $*" >&2; exit 1; }
+
+overlay_active() { grep -Eq 'overlayroot=tmpfs|boot=overlay' /proc/cmdline; }
+
+# Every line of $1 must match $2; refuses the whole file otherwise.
+check_lines() {
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    echo "$line" | grep -Eq "$2" || die "refusing line in $1: $line"
+  done < "$1"
+}
+
+firewall() {
+  rules="$data/firewall.rules"
+  if [ ! -f "$rules" ]; then  # before the web app ever ran: the defaults (HTTP, mDNS, hotspot DHCP/DNS)
+    rules="$(mktemp)"
+    printf '%s\n' 'default deny incoming' 'default allow outgoing' 'logging off' 'allow 80/tcp' 'allow 5353/udp' \
+      'allow in on wlan0 to any port 67 proto udp' 'allow in on wlan0 to any port 53 proto udp' \
+      'allow in on wlan0 to any port 53 proto tcp' > "$rules"
+    say "no $data/firewall.rules yet, applying the defaults"
+  fi
+  check_lines "$rules" "$rule_re"
+  ufw --force reset > /dev/null
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    # shellcheck disable=SC2086  # the rule is ufw's argument list, validated above
+    ufw $line > /dev/null
+  done < "$rules"
+  ufw --force enable > /dev/null
+  say "firewall: $(grep -c . "$rules") rules applied"
+}
+
+ssh_mode() {
+  mode="$(head -n 1 "$data/ssh/mode" 2>/dev/null || echo disabled)"
+  if [ "$mode" = "key-only" ]; then
+    keys="$data/ssh/authorized_keys"
+    [ -s "$keys" ] || die "key-only SSH but $keys is empty; leaving SSH as it is"
+    check_lines "$keys" "$key_re"
+    install -m 644 -o root -g root "$keys" /etc/ssh/ledposter_authorized_keys
+    mkdir -p /etc/ssh/sshd_config.d
+    cat > /etc/ssh/sshd_config.d/10-ledposter.conf <<'EOF'
+# Written by ledposter-sys ssh at every boot (the root is a read-only overlay). Key-only.
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/ledposter_authorized_keys
+EOF
+    sshd -t || { rm -f /etc/ssh/sshd_config.d/10-ledposter.conf; die "sshd rejected the config; drop-in removed"; }
+    systemctl reload-or-restart ssh.service
+    say "ssh: key-only, $(grep -c . "$keys") key(s)"
+  else
+    systemctl stop ssh.service ssh.socket 2> /dev/null || true
+    say "ssh: disabled"
+  fi
+}
+
+set_hostname() {
+  name="$1"
+  echo "$name" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' || die "bad hostname '$name'"
+  if ! hostnamectl set-hostname "$name" 2> /dev/null; then  # hostnamed not up yet (boot)
+    hostname "$name" || say "could not set the kernel hostname (container?)"
+    echo "$name" > /etc/hostname
+  fi
+  mkdir -p "$state"
+  echo "$name" > "$state/hostname"
+  if command -v ledposter-net > /dev/null; then
+    LEDPOSTER_DATA="$data" ledposter-net hosts || say "could not update /etc/hosts"
+  fi
+}
+
+boot() {
+  mkdir -p "$state" "$data/media" "$data/logs" "$data/ssh"
+  if [ -s "$state/hostname" ]; then
+    name="$(head -n 1 "$state/hostname")"
+    [ "$(hostname)" = "$name" ] || set_hostname "$name"
+  fi
+  # The overlay was meant to be on but is not, and no maintenance is in progress: a power cut
+  # hit between the cmdline flip and the marker. Mark it so the resume unit puts it back.
+  if [ -f "$state/overlay-wanted" ] && ! overlay_active && [ ! -f "$state/maintenance-pending" ]; then
+    say "overlay is off but wanted: scheduling maintenance resume to re-enable it"
+    date > "$state/maintenance-pending"
+  fi
+}
+
+factory_reset() {
+  [ -f "$data/factory-reset" ] || { say "no reset requested"; exit 0; }
+  say "factory reset: wiping $data (keeping app/, setup-password, state/)"
+  systemctl stop ledposter-web.service 2> /dev/null || true
+  if command -v nmcli > /dev/null; then  # every Wi-Fi profile, the hotspot included
+    nmcli -t -f UUID,TYPE connection show 2> /dev/null | while IFS=: read -r uuid type; do
+      if [ "$type" = "802-11-wireless" ]; then nmcli connection delete uuid "$uuid" > /dev/null 2>&1 || true; fi
+    done
+  fi
+  set_hostname ledposter || true
+  for p in "$data"/* "$data"/.[!.]*; do
+    [ -e "$p" ] || continue
+    case "$(basename "$p")" in app | setup-password | state | lost+found) continue ;; esac
+    rm -rf "$p"
+  done
+  mkdir -p "$data/media" "$data/logs" "$data/ssh"
+  chown ledposter:ledposter "$data/media" "$data/logs" "$data/ssh"
+  web="$data/app/current/web"
+  if [ -x "$web/.venv/bin/python" ]; then
+    (cd "$web" && LEDPOSTER_DATA="$data" runuser -u ledposter -- "$web/.venv/bin/python" -m ledposter.system init-config "$data/config.yaml")
+  fi
+  firewall
+  ssh_mode || true
+  sync
+  say "factory reset done; rebooting into setup mode"
+  systemctl reboot
+}
+
+log_maint() { mkdir -p "$data/logs"; echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$data/logs/maintenance.log"; }
+
+upgrade() {
+  log_maint "apt-get update + unattended-upgrade starting"
+  if apt-get update >> "$data/logs/maintenance.log" 2>&1 && unattended-upgrade -v >> "$data/logs/maintenance.log" 2>&1; then
+    log_maint "upgrade finished"
+  else
+    log_maint "upgrade failed (see above); the window closes anyway"
+  fi
+}
+
+maintenance_begin() {
+  mkdir -p "$state"
+  if overlay_active; then
+    date > "$state/maintenance-pending"
+    sync
+    log_maint "maintenance window: overlay off, rebooting to upgrade on the writable root"
+    overlay off keep || { rm -f "$state/maintenance-pending"; die "could not turn the overlay off"; }
+    sync
+    systemctl reboot
+  else
+    upgrade
+    if [ -f "$state/overlay-wanted" ]; then
+      log_maint "re-enabling the overlay and rebooting"
+      overlay on && sync && systemctl reboot
+    fi
+  fi
+}
+
+maintenance() {
+  ENABLED=1 DAY=6 HOUR=4
+  # shellcheck disable=SC1091  # written by the web app: ENABLED=, DAY= (0 = Monday), HOUR=
+  [ -f "$data/maintenance.conf" ] && . "$data/maintenance.conf"
+  case "${1:-timer}" in
+    timer)
+      if [ -f "$state/maintenance-request" ]; then
+        rm -f "$state/maintenance-request"
+        maintenance_begin
+        exit 0
+      fi
+      [ "$ENABLED" = 1 ] || exit 0
+      [ "$(date +%u)" = "$((DAY + 1))" ] || exit 0     # date: 1 = Monday .. 7 = Sunday
+      [ "$(date +%H)" = "$(printf '%02d' "$HOUR")" ] || exit 0
+      maintenance_begin ;;
+    now) maintenance_begin ;;
+    resume)
+      [ -f "$state/maintenance-pending" ] || exit 0
+      if overlay_active; then
+        rm -f "$state/maintenance-pending"
+        log_maint "overlay is back on; maintenance window closed"
+        exit 0
+      fi
+      upgrade
+      if [ -f "$state/overlay-wanted" ]; then
+        overlay on keep || log_maint "could not re-enable the overlay; the root stays writable"
+      fi
+      rm -f "$state/maintenance-pending"
+      sync
+      log_maint "rebooting"
+      systemctl reboot ;;
+    *) die "usage: ledposter-sys maintenance timer|now|resume" ;;
+  esac
+}
+
+# overlay on|off [keep]: `keep` leaves the overlay-wanted marker alone (the maintenance window
+# turns the overlay off temporarily; an admin turning it off means it).
+overlay() {
+  command -v raspi-config > /dev/null || die "raspi-config not found (not Raspberry Pi OS?)"
+  case "${1:-status}" in
+    on) raspi-config nonint enable_overlayfs && { mkdir -p "$state"; touch "$state/overlay-wanted"; } ;;
+    off)
+      raspi-config nonint disable_overlayfs
+      if [ "${2:-}" != keep ]; then rm -f "$state/overlay-wanted"; fi ;;
+    status)
+      if overlay_active; then echo "overlay: active"; else echo "overlay: off"; fi
+      if grep -Eq 'overlayroot=tmpfs|boot=overlay' /boot/firmware/cmdline.txt 2> /dev/null; then echo "next boot: on"; else echo "next boot: off"; fi
+      [ -f "$state/overlay-wanted" ] && echo "wanted: yes" || echo "wanted: no" ;;
+    *) die "usage: ledposter-sys overlay on|off|status" ;;
+  esac
+}
+
+case "${1:-}" in
+  firewall) firewall ;;
+  ssh) ssh_mode ;;
+  boot) boot ;;
+  hostname) set_hostname "${2:?hostname}" ;;
+  factory-reset) factory_reset ;;
+  maintenance) maintenance "${2:-timer}" ;;
+  overlay) overlay "${2:-status}" "${3:-}" ;;
+  *)
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2 ;;
+esac

@@ -1,0 +1,35 @@
+# The display engine. Starts as soon as /data is mounted (no network, no basic.target: the
+# boot screen must be on the wall well inside the 30s budget), shows the boot screen until
+# the web app restores the last mode, and is restarted forever if it dies. Runs as root only
+# until the matrix library has set up the GPIO, then drops to engine.user/group from the
+# config (ledposter). The sockets live in /run/ledposter, group ledposter, so the web app
+# (user ledposter) can connect. Installed by system/install.sh.
+[Unit]
+Description=LED wall display engine
+DefaultDependencies=no
+RequiresMountsFor=/data
+After=local-fs.target systemd-tmpfiles-setup.service
+Conflicts=shutdown.target
+Before=shutdown.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=LEDPOSTER_DATA=/data
+WorkingDirectory=/data/app/current/engine
+ExecStart=/data/app/current/engine/ledengine
+Restart=always
+RestartSec=2
+Nice=-5
+OOMScoreAdjust=-500
+RuntimeDirectory=ledposter
+RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=yes
+Group=ledposter
+TimeoutStopSec=5
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+# Software update with rollback (web/ledposter/updater.py). Started by the web app after it
+# wrote /data/app/update-request.json (polkit allows the ledposter user to start this unit),
+# and at every boot to finish a switch a power cut interrupted (health check, or roll back)
+# or to redo an interrupted build. Runs as ledposter: the releases dir is its own, and the
+# service restarts go through polkit. Low priority so the wall keeps its frame rate while
+# the engine compiles. Installed by system/install.sh.
+[Unit]
+Description=LED wall software update
+RequiresMountsFor=/data
+After=ledposter-engine.service ledposter-web.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ledposter
+Group=ledposter
+Environment=LEDPOSTER_DATA=/data HOME=/data/app
+ExecStart=/usr/bin/python3 /data/app/current/web/ledposter/updater.py run
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=2h
+
+[Install]
+WantedBy=multi-user.target

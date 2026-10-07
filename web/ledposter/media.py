@@ -38,10 +38,7 @@ class Library:
         return os.path.join(self.dir, mid, *parts)
 
     def _write(self, item):
-        p = self._path(item["id"], "item.json")
-        with open(p + ".tmp", "w") as f:
-            json.dump(item, f)
-        os.replace(p + ".tmp", p)
+        tc.write_json_atomic(self._path(item["id"], "item.json"), item)
 
     async def start(self):
         os.makedirs(self.dir, exist_ok=True)
@@ -167,10 +164,7 @@ class Library:
         if speed != 1.0 and len(meta["durations_ms"]) > 1:
             meta["durations_ms"] = [max(1, round(d / speed)) for d in meta["durations_ms"]]
         meta["speed"] = speed
-        p = os.path.join(out, "meta.json")
-        with open(p + ".tmp", "w") as f:
-            json.dump(meta, f)
-        os.replace(p + ".tmp", p)
+        tc.write_json_atomic(os.path.join(out, "meta.json"), meta)
         return {"w": meta["w"], "h": meta["h"], "frames": len(meta["durations_ms"]),
                 "duration_ms": sum(meta["durations_ms"]), "filter": meta["filter"],
                 "source_w": meta["source"]["w"], "source_h": meta["source"]["h"],

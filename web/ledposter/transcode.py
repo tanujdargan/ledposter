@@ -134,6 +134,8 @@ def transcode(src_path, out_dir, *, w=128, h=192, scale="fit", filter=None, crop
             n += 1
         proc.stdout.close()
         rc = proc.wait()
+        out.flush()
+        os.fsync(out.fileno())  # on disk before the rename below makes it visible (power-cut safety)
         log.seek(0)
         text = log.read().decode(errors="replace")
     try:
@@ -156,12 +158,16 @@ def transcode(src_path, out_dir, *, w=128, h=192, scale="fit", filter=None, crop
         if n == 1:
             durations = [STILL_MS]
         os.replace(frames_path + ".part", frames_path)
+        thumb_path = os.path.join(out_dir, "thumb.png")
         subprocess.run(
             ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
-             "-i", "pipe:0", "-frames:v", "1", os.path.join(out_dir, "thumb.png")],
+             "-i", "pipe:0", "-frames:v", "1", "-f", "image2", thumb_path + ".part"],
             input=thumb.tobytes(), check=True, capture_output=True)
+        with open(thumb_path + ".part", "rb") as tf:
+            os.fsync(tf.fileno())
+        os.replace(thumb_path + ".part", thumb_path)
     except BaseException:
-        for f in (frames_path + ".part", frames_path):
+        for f in (frames_path + ".part", frames_path, os.path.join(out_dir, "thumb.png.part")):
             if os.path.exists(f):
                 os.remove(f)
         raise
@@ -172,11 +178,25 @@ def transcode(src_path, out_dir, *, w=128, h=192, scale="fit", filter=None, crop
         "position": [px, py], "gamma": gamma, "dither": dither,
         "source": {"name": os.path.basename(src_path), "format": fmt, "w": sw, "h": sh},
     }
-    tmp = os.path.join(out_dir, "meta.json.tmp")
-    with open(tmp, "w") as f:  # written last: a cache entry is complete once meta.json exists
-        json.dump(meta, f)
-    os.replace(tmp, os.path.join(out_dir, "meta.json"))
+    # Written last, fsync + rename + fsync dir: a cache entry is complete once meta.json exists,
+    # and a power cut can never leave a meta.json that points at frames that are not on disk.
+    write_json_atomic(os.path.join(out_dir, "meta.json"), meta)
     return meta
+
+
+def write_json_atomic(path, obj):
+    d = os.path.dirname(os.path.abspath(path))
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    dfd = os.open(d, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
 def main(argv=None):

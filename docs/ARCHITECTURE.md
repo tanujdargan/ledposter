@@ -9,14 +9,15 @@ engine/    C++17 display engine (Makefile). `make test` runs anywhere; `make` bu
            `make sim` builds the same engine with a stub matrix (no rpi-rgb-led-matrix) for Mac/Linux dev
 web/       Python 3 package `ledposter` (FastAPI backend, transcoder, MQTT, networking helpers)
 web/static vanilla JS PWA, no build step, served by FastAPI
-system/    systemd units, install script, NetworkManager/avahi/ufw/overlayfs setup (M6, M8)
+system/    install.sh, systemd units, polkit rules, the root-side scripts (bin/), NetworkManager/avahi/journald/apt drop-ins (M6, M8)
+tools/     game_hook.py (PC side of the game hook), acceptance.sh (on-device acceptance checks, docs/ACCEPTANCE.md)
 config/    example configs
 docs/      spec, this file, protocol.md, ui-references.md, DEVIATIONS.md
 ```
 
 ## Data and config
 
-- Writable data dir is `/data` (env `LEDPOSTER_DATA` overrides it for dev and tests). It holds `config.yaml`, `media/`, `logs/`.
+- Writable data dir is `/data` (env `LEDPOSTER_DATA` overrides it for dev and tests). It holds `config.yaml`, `media/`, `logs/`, and from M8 the hotspot card password (`setup-password`), the session key (`secret`), the inputs of the root-side units (`firewall.rules`, `ssh/`, `maintenance.conf`, `factory-reset`), persisted system state (`state/`: hostname, Wi-Fi profiles bind-mounted into `/etc/NetworkManager/system-connections`, maintenance and overlay markers) and the installed software (`app/`: `releases/<tag>/` checkouts with their built engine and venv, `current` and `previous` symlinks, the update request/status/pending files, the deploy key). The root filesystem is a read-only overlay, so nothing outside `/data` survives a reboot (system/install.sh, docs/DEVIATIONS.md).
 - `/data/config.yaml` is the single versioned YAML config (`version:` key). Only the web app writes it, atomically (tmp file, fsync, rename, fsync dir). The engine only reads it: at start, and again on the `reload_config` command.
 - Every hardware tunable (slowdown, PWM bits, chain mapping, limiter ceiling, GPIO pins, I2C bus/address, socket paths) lives in config, never in code.
 
@@ -44,6 +45,7 @@ docs/      spec, this file, protocol.md, ui-references.md, DEVIATIONS.md
 
 - **Engine:** matrix, frame loop, modes, playlist playback, limiter, BH1750, button, DDP/E1.31 receivers, overlays, on-wall text (IP, setup status).
 - **Web app:** auth, REST API (`/api/...`, OpenAPI at `/docs`), preview WebSocket relay, uploads and transcoding, config writes, schedule, MQTT/HA, networking (NetworkManager via `nmcli`), updates.
+- **Root-side units (M6/M8):** the web app runs as the `ledposter` user and never gets root. Anything that needs it (DHCP rollback, `/etc/hosts`, firewall, SSH mode, update/rollback, factory reset, restarts, reboot, the maintenance window) is a fixed systemd unit in `system/systemd/` that the user may start through polkit (`system/polkit/`) and that reads its inputs from a file under `/data` written by the app. No sudo, no transient units.
 
 ## Milestone hand-off rules
 

@@ -1,7 +1,8 @@
 """Owns $LEDPOSTER_DATA/config.yaml: read with defaults, atomic write (docs/ARCHITECTURE.md).
 
 The web app is the only writer. Every write goes through save(): tmp file, fsync,
-rename, fsync dir, mode 600 (the file holds the admin password hash and token hashes).
+rename, fsync dir, mode 640 (the file holds the admin password hash and token hashes;
+the group is the `ledposter` group the engine drops to, so reload_config can read it).
 """
 import copy
 import os
@@ -39,6 +40,12 @@ DEFAULTS = {
     "ddp": {"enabled": False},
     "e131": {"enabled": False, "start_universe": 1, "multicast": False},
     "stream": {"apply_gamma": True},
+    # M8: SSH mode applied by ledposter-ssh.service (disabled, or key-only with these keys),
+    # the weekly unattended-upgrades window (day: 0 = Monday, hour: local), and the last
+    # set_mode the web app sent, restored when the engine comes up on its boot screen.
+    "ssh": {"mode": "disabled", "authorized_keys": ""},
+    "maintenance": {"enabled": True, "day": 6, "hour": 4},
+    "last_mode": {},
 }
 
 
@@ -82,7 +89,7 @@ def save(cfg, p=None):
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".config.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            os.fchmod(fd, 0o600)
+            os.fchmod(fd, 0o640)
             yaml.safe_dump(out, f, sort_keys=False, default_flow_style=None)
             f.flush()
             os.fsync(f.fileno())
