@@ -51,8 +51,10 @@ inline double bh1750_lux(uint8_t hi, uint8_t lo) { return ((hi << 8) | lo) / 1.2
 // Polls the sensor every poll_ms. The reading is smoothed in log(lux) (so the
 // curve output moves smoothly) with time constant tau_s. A missing sensor or a
 // read error is logged once; lux and smoothed go NaN, so auto brightness falls
-// back to the user setting, and it retries every 5s. Sim builds have no I2C:
-// set_fake() stands in for the sensor (NaN = missing).
+// back to the user setting, and it retries every 5s. The bus is opened in the
+// constructor, before the matrix library drops root; reopening it after an
+// error needs the i2c group. Sim builds have no I2C: set_fake() stands in for
+// the sensor (NaN = missing).
 struct LightSensor {
   std::atomic<double> lux{NAN}, smoothed{NAN};  // latest reading; smoothed, for the curve
   std::atomic<double> tau_s;                    // reload_config can change it
@@ -93,7 +95,8 @@ struct LightSensor {
   std::mutex mu;
   std::condition_variable cv;
   bool stop = false, poked = false;
-  int fd = -1;
+  int fd = open_bus();
+  bool ready = false;  // fd set up for continuous reads
   std::thread th;  // last: starts after everything above is set up
 
   // Sleeps up to ms; false when stopping.
@@ -104,11 +107,19 @@ struct LightSensor {
     return !stop;
   }
 
+  int open_bus() {
+#ifdef LEDPOSTER_I2C
+    return open(("/dev/i2c-" + std::to_string(bus)).c_str(), O_RDWR | O_CLOEXEC);
+#else
+    return -1;
+#endif
+  }
+
   bool read(double &v, std::string &why) {
 #ifdef LEDPOSTER_I2C
-    if (fd < 0) {
+    if (!ready) {
       const std::string dev = "/dev/i2c-" + std::to_string(bus);
-      fd = open(dev.c_str(), O_RDWR | O_CLOEXEC);
+      if (fd < 0) fd = open_bus();
       if (fd < 0) {
         why = dev + ": " + strerror(errno) + (errno == ENOENT ? " (enable I2C in raspi-config)" : "");
         return false;
@@ -121,12 +132,13 @@ struct LightSensor {
         why = "no answer at " + std::string(a) + " on " + dev + ": " + strerror(errno);
         return close(fd), fd = -1, false;
       }
+      ready = true;
       if (!pause(200)) return false;  // first high-res measurement takes up to 180ms
     }
     uint8_t b[2];
     if (::read(fd, b, 2) != 2) {
       why = std::string("read failed: ") + strerror(errno);
-      return close(fd), fd = -1, false;
+      return close(fd), fd = -1, ready = false, false;
     }
     v = bh1750_lux(b[0], b[1]);
     return true;

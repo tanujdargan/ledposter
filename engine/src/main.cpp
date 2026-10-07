@@ -6,6 +6,9 @@
 // (ipc.h, docs/protocol.md) let the web app drive it and watch the output; the
 // push button (button.h) cycles modes, toggles power and asks for Wi-Fi setup.
 // Built with -DLEDPOSTER_SIM (make sim) it runs without the matrix library or I2C.
+#include <grp.h>
+#include <pwd.h>
+#include <unistd.h>
 #include <yaml-cpp/yaml.h>
 
 #include <chrono>
@@ -41,7 +44,10 @@ struct Display {
   rgb_matrix::FrameCanvas *off;
   const Layout &L;
 
-  Display(const YAML::Node &m, const Layout &L, const std::string &) : L(L) {
+  // user, group: what the library drops root to once the GPIO is set up.
+  Display(const YAML::Node &m, const Layout &L, const std::string &, const std::string &user,
+          const std::string &group)
+      : L(L) {
     const std::string mapping = m["hardware_mapping"].as<std::string>("adafruit-hat-pwm");
     rgb_matrix::RGBMatrix::Options o;
     o.hardware_mapping = mapping.c_str();
@@ -53,6 +59,12 @@ struct Display {
     o.show_refresh_rate = m["show_refresh_rate"].as<bool>(false);
     rgb_matrix::RuntimeOptions rt;
     rt.gpio_slowdown = m["gpio_slowdown"].as<int>(2);
+    rt.drop_priv_user = user.c_str();
+    rt.drop_priv_group = group.c_str();
+    // The library only sets uid and gid; without this the engine would keep
+    // root's supplementary groups instead of the user's (i2c for the BH1750).
+    const struct group *gr = geteuid() == 0 ? getgrnam(group.c_str()) : nullptr;
+    if (gr && initgroups(user.c_str(), gr->gr_gid)) perror("initgroups");
     matrix = rgb_matrix::RGBMatrix::CreateFromOptions(o, rt);
     if (!matrix) exit(1);  // library already printed why
     matrix->set_luminance_correct(false);  // we own gamma (docs/ARCHITECTURE.md)
@@ -85,7 +97,8 @@ struct Display {
   std::string dump;
   std::chrono::steady_clock::time_point last{};
 
-  Display(const YAML::Node &, const Layout &L, const std::string &dump)
+  Display(const YAML::Node &, const Layout &L, const std::string &dump, const std::string &,
+          const std::string &)
       : out(L.width, L.height), dump(dump) {}
   ~Display() { write(); }
 
@@ -321,6 +334,36 @@ static std::string yaml_at(const YAML::Node &cfg, const char *key) {
   return YAML::Dump(c);
 }
 
+// Binds a socket now, while still root (the matrix library drops root when it
+// starts). As root, the socket and the parent dir if we made it go to
+// user:group, so the engine can still remove them after the drop. -1 if it
+// can't: the wall keeps running without it (e.g. no write access to /run),
+// it just can't be controlled or previewed.
+static int open_socket(const char *what, const std::string &path, const std::string &user,
+                       const std::string &group) {
+  std::error_code ec;
+  const auto dir = std::filesystem::path(path).parent_path();
+  const bool had_dir = dir.empty() || std::filesystem::exists(dir, ec);
+  int fd;
+  try {
+    fd = listen_unix(path);
+  } catch (const std::exception &e) {
+    fprintf(stderr, "ledengine: %s socket off: %s\n", what, e.what());
+    return -1;
+  }
+  if (geteuid() == 0) {
+    const passwd *pw = getpwnam(user.c_str());
+    const struct group *gr = getgrnam(group.c_str());
+    if (!pw || !gr)
+      fprintf(stderr, "ledengine: no user %s or group %s (engine.user, engine.group)\n",
+              user.c_str(), group.c_str());
+    else if (chown(path.c_str(), pw->pw_uid, gr->gr_gid) ||
+             (!had_dir && chown(dir.c_str(), pw->pw_uid, gr->gr_gid)))
+      fprintf(stderr, "ledengine: chown %s: %s\n", path.c_str(), strerror(errno));
+  }
+  return fd;
+}
+
 static PressClassifier load_button(YAML::Node b) {  // non-const: missing keys read as defaults
   PressClassifier c;
   c.debounce_ms = b["debounce_ms"].as<int>(30);
@@ -407,7 +450,13 @@ int main(int argc, char **argv) {
   YAML::Node bh = cfg["sensors"]["bh1750"], eng = cfg["engine"];
   const std::string sock = eng["socket"].as<std::string>("/run/ledposter/engine.sock");
   const std::string psock = eng["preview_socket"].as<std::string>("/run/ledposter/frames.sock");
-  // Opened before the matrix starts (it drops root); polled from start() below.
+  // What the matrix library drops root to (a dedicated user from milestone 8).
+  const std::string user = eng["user"].as<std::string>("daemon");
+  const std::string group = eng["group"].as<std::string>("daemon");
+  // Sockets, the I2C bus and the button line are opened before the matrix
+  // starts (it drops root). The button is polled from start() below.
+  const int sock_fd = open_socket("control", sock, user, group);
+  const int psock_fd = open_socket("preview", psock, user, group);
   YAML::Node bcfg = cfg["button"];  // non-const: a missing section reads as defaults
   Button button(bcfg["chip"].as<std::string>("/dev/gpiochip0"), bcfg["gpio"].as<int>(-1), press);
 
@@ -415,11 +464,11 @@ int main(int argc, char **argv) {
   signal(SIGTERM, [](int) { g_stop = 1; });
   signal(SIGPIPE, SIG_IGN);  // a client hanging up must not kill the engine
 
-  Display display(m, layout, dump);
-  fprintf(stderr, "canvas %dx%d, %zu panels, mode %s\n", layout.width, layout.height,
-          layout.panels.size(), st.info.name.c_str());
   LightSensor sensor(bh["i2c_bus"].as<int>(1), bh["address"].as<int>(0x23),
                      bh["poll_ms"].as<int>(500), st.s.smoothing_s);
+  Display display(m, layout, dump, user, group);
+  fprintf(stderr, "canvas %dx%d, %zu panels, mode %s\n", layout.width, layout.height,
+          layout.panels.size(), st.info.name.c_str());
   const auto t0 = std::chrono::steady_clock::now();
 
   auto status = [&]() -> json {
@@ -614,17 +663,16 @@ int main(int argc, char **argv) {
     mailbox.push({0, nullptr, std::move(job)});
   };
 
-  // The wall keeps running without its sockets (e.g. no write access to
-  // /run); it just can't be controlled or previewed.
+  // The wall keeps running without its sockets (see open_socket).
   std::unique_ptr<ControlServer> control;
   std::unique_ptr<PreviewServer> preview;
   try {
-    control = std::make_unique<ControlServer>(sock, mailbox, handler);
+    if (sock_fd >= 0) control = std::make_unique<ControlServer>(sock, sock_fd, mailbox, handler);
   } catch (const std::exception &e) {
     fprintf(stderr, "ledengine: control socket off: %s\n", e.what());
   }
   try {
-    preview = std::make_unique<PreviewServer>(psock);
+    if (psock_fd >= 0) preview = std::make_unique<PreviewServer>(psock, psock_fd);
   } catch (const std::exception &e) {
     fprintf(stderr, "ledengine: preview socket off: %s\n", e.what());
   }

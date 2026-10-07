@@ -209,7 +209,10 @@ struct ControlServer {
   using Handler = std::function<Job(const json &)>;
 
   ControlServer(const std::string &path, Mailbox &mb, Handler h)
-      : path(path), lfd(listen_unix(path)), mb(mb), handler(std::move(h)) {
+      : ControlServer(path, listen_unix(path), mb, std::move(h)) {}
+  // lfd: listen_unix(path) done earlier (before the matrix drops root).
+  ControlServer(const std::string &path, int lfd, Mailbox &mb, Handler h)
+      : path(path), lfd(lfd), mb(mb), handler(std::move(h)) {
     mb.on_reply = [this] { wake.poke(); };
     th = std::thread([this] { run(); });
   }
@@ -326,8 +329,8 @@ struct ControlServer {
 // previous message skips the frames published meanwhile; one that stops
 // reading just stays stuck on its message without affecting anyone else.
 struct PreviewServer {
-  explicit PreviewServer(const std::string &path)
-      : path(path), lfd(listen_unix(path)), th([this] { run(); }) {}
+  explicit PreviewServer(const std::string &path) : PreviewServer(path, listen_unix(path)) {}
+  PreviewServer(const std::string &path, int lfd) : path(path), lfd(lfd), th([this] { run(); }) {}
   ~PreviewServer() {
     stop = true;
     wake.poke();

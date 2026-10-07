@@ -35,6 +35,8 @@ engine:
   socket: /run/ledposter/engine.sock          # control: newline-delimited JSON (docs/protocol.md)
   preview_socket: /run/ledposter/frames.sock  # output frames for the live preview
   preview_fps: 15                             # max preview messages per second per client
+  user: daemon                                # the engine drops root to user:group after startup (sockets are chowned to it)
+  group: daemon                               # the web app must run in this group (or as root) to use the sockets
 
 display:
   gamma: 2.2   # engine LUT for patterns, effects, clock and text; the transcoder bakes the same curve into media

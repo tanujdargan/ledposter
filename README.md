@@ -201,6 +201,14 @@ cd ../web && .venv/bin/python -m pytest -q
 
 Expected: `all engine tests passed`, and pytest reports `18 passed` (the engine socket tests run against `build/ledengine-sim`).
 
+The engine starts as root (`sudo`) but the matrix library drops root right after it starts the panels; from then on the engine runs as `engine.user`:`engine.group` from the config (default `daemon`:`daemon`; milestone 8 sets up a dedicated `ledposter` user). The sockets, the I2C bus and the button line are opened before that, and the sockets (and `/run/ledposter`, if the engine made it) are handed to that user, mode 660. So that user needs:
+
+- read access to `$LEDPOSTER_DATA` (`config.yaml` for `reload_config`, and the media). If your home dir is mode 700 (`ls -ld ~`), `chmod o+x ~`. The web app writes `config.yaml` mode 600, so after the web app has saved it `reload_config` fails unless the engine runs as the web app's user: for dev testing you can set `engine.user` and `engine.group` to the user that runs the web app (e.g. `pi`, which is already in `i2c`).
+- membership in group `i2c`, so the BH1750 can be reopened after an error (sensor unplugged): `sudo usermod -aG i2c daemon` for dev testing until milestone 8.
+- the web app must run as a user in `engine.group`, or as root, to connect to the sockets.
+
+Tags m3 to m5 predate this: there the engine created its sockets and opened I2C after the drop, so on the Pi it had no control socket. When testing those tags, set `engine.socket` and `engine.preview_socket` to `/tmp/ledposter/engine.sock` and `/tmp/ledposter/frames.sock` (and use those paths below), or test from m6 on.
+
 Update the data dir config (the new `brightness:`, `sensors:` and `engine:` sections), then run the engine on the one wired panel. One panel at full white is only about 6A, so lower the ceiling to see the limiter work:
 
 ```sh
@@ -362,10 +370,11 @@ With all six panels, use `config.example.yaml`; the effects fill the 128x192 can
 - **`light sensor: no answer at 0x23`**: `i2cdetect -y 1` doesn't show `23` either. Check VCC is 3.3V, SDA/SCL aren't swapped, and the ADDR pin (high = `0x5c`, set `sensors.bh1750.address`). Long wires (over about 30cm) need slower I2C or shorter cables.
 - **Auto brightness pumps or reacts to the wall itself**: the sensor sees the panels. Turn it away from the wall, or raise `smoothing_s`.
 - **Wall too dim at night / too bright by day**: tune `brightness.auto_curve` (`min_pct`, `lux_low`, `lux_high`) and `reload_config`.
-- **`control socket off: ... Permission denied`**: the engine can't create `/run/ledposter`. Run it with `sudo`, or point `engine.socket` and `engine.preview_socket` at a writable path for dev.
+- **`control socket off: ... Permission denied`**: the engine can't create `/run/ledposter`. Run it with `sudo`, or point `engine.socket` and `engine.preview_socket` at a writable path for dev. On m3 to m5 the engine made the sockets after dropping root, so this happens even with `sudo`: use paths under `/tmp` (e.g. `/tmp/ledposter/engine.sock`) or update to m6 or later.
+- **Works at start, then `Permission denied` on media, `reload_config` or the sensor**: after starting the panels the engine runs as `engine.user`:`engine.group` (default `daemon`:`daemon`), not root. That user needs read access to `$LEDPOSTER_DATA` (config and media) and the `i2c` group to reopen the BH1750 after an error (`sudo usermod -aG i2c daemon`, then restart the engine). See [Testing milestone 3](#testing-milestone-3-on-the-pi).
 - **`another engine is already listening here`**: an engine is still running (`pgrep -a ledengine`); stop it first.
 - **`button: /dev/gpiochip0: ...` or `button: GPIO25 ...: Device or resource busy`**: another program holds the line (`gpioinfo` from `gpiod` shows the owner), or `button.gpio` is a pin the matrix uses. Pick a free pin (Wiring assumptions). `status` shows `"button": "missing"`; the wall keeps running.
 - **Button does nothing**: check the log for `button: GPIO25 on /dev/gpiochip0` at start. With `gpiod` installed, `gpioget gpiochip0 25` (engine stopped) reads 1 released and 0 pressed. Phantom presses: longer or untwisted wires picking up noise; raise `debounce_ms`.
 - **`fonts: N of 6 missing in ...`**: the vendor submodule isn't checked out (`git submodule update --init`) or `fonts.dir` is wrong. Without fonts, text and clock modes can't be set and overlays show no words.
 - **Clock shows the wrong time**: set the time zone (`sudo raspi-config nonint do_change_timezone ...`) and restart the engine; check `timedatectl` shows NTP synchronized.
-- **`socat: ... Permission denied` from a client**: the sockets are mode 660, owned by whoever runs the engine. Use `sudo` for now (the systemd setup in milestone 8 gives the web app its group).
+- **`socat: ... Permission denied` from a client**: the sockets are mode 660, owned by `engine.user`:`engine.group`. Run the client (and the web app) as root or as a user in `engine.group` (the systemd setup in milestone 8 gives the web app its group).
