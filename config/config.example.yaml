@@ -89,10 +89,6 @@ playlists:
 web:
   port: 80           # dev: python -m ledposter --port 8080
 
-engine:
-  socket: /run/ledposter/engine.sock          # control: newline-delimited JSON
-  preview_socket: /run/ledposter/frames.sock  # preview: status line + raw RGB frame
-
 # Enforced by the web app's scheduler (it sends power / set_brightness to the engine).
 schedule:
   enabled: false
