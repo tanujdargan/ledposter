@@ -54,3 +54,28 @@ playlists:
     items:
       - {media: example-gif}
       - {media: example-photo, duration_s: 15}
+
+# Web app (milestone 4). The admin password hash and API token hashes are added
+# here by the app on first run; the app rewrites this file atomically, mode 600.
+web:
+  port: 80           # dev: python -m ledposter --port 8080
+
+engine:
+  socket: /run/ledposter/engine.sock          # control: newline-delimited JSON
+  preview_socket: /run/ledposter/frames.sock  # preview: status line + raw RGB frame
+
+# Enforced by the web app's scheduler (it sends power / set_brightness to the engine).
+schedule:
+  enabled: false
+  'on': '07:00'
+  'off': '23:00'
+  days: [0, 1, 2, 3, 4, 5, 6]   # 0 = Monday; the day the "on" time falls on
+  quiet:                        # brightness cap, e.g. at night
+    enabled: false
+    start: '22:00'
+    end: '07:00'
+    max_brightness: 20
+
+# Stored by Settings now, used from milestone 7.
+mqtt: {enabled: false, host: '', port: 1883, username: '', password: ''}
+ddp: {enabled: false}

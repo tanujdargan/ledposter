@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in · LED Poster</title>
+<meta name="theme-color" content="#0E0E10">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<!-- Login / first-run password: Rocket Money checklist, one field, no username (docs/ui-references.md 7) -->
+<div class="login">
+  <form class="box" id="form" novalidate>
+    <img class="mark" src="/static/icon.svg" alt="">
+    <h1 id="title">LED Poster</h1>
+    <p id="subtitle">Sign in to control the wall</p>
+    <label class="field"><span id="pw-label">Password</span>
+      <div class="pw"><input class="input" type="password" id="password" autocomplete="current-password" required minlength="1" autofocus>
+        <button type="button" id="eye" aria-label="Show password">👁</button></div></label>
+    <ul class="rules hidden" id="rules"><li data-rule="len">At least 8 characters</li></ul>
+    <div class="err" id="err"></div>
+    <button class="btn primary block" id="submit" type="submit">Sign in</button>
+  </form>
+</div>
+<script>
+(async () => {
+  const $ = (s) => document.querySelector(s);
+  const state = await fetch("/api/auth/state").then(r => r.json()).catch(() => ({first_run: false}));
+  if (state.authenticated) { location.replace("/"); return; }
+  const first = state.first_run;
+  if (first) {
+    $("#title").textContent = "Set an admin password";
+    $("#subtitle").textContent = "This wall has no password yet. Choose one; it is needed to sign in from any device.";
+    $("#pw-label").textContent = "New password";
+    $("#password").autocomplete = "new-password";
+    $("#rules").classList.remove("hidden");
+    $("#submit").textContent = "Continue";
+    $("#submit").disabled = true;
+  }
+  $("#eye").onclick = () => { const p = $("#password"); p.type = p.type === "password" ? "text" : "password"; };
+  $("#password").oninput = () => {
+    if (!first) return;
+    const ok = $("#password").value.length >= 8;
+    $("[data-rule=len]").classList.toggle("ok", ok);
+    $("#submit").disabled = !ok;
+  };
+  $("#form").onsubmit = async (e) => {
+    e.preventDefault();
+    $("#err").textContent = "";
+    $("#submit").disabled = true;
+    try {
+      const r = await fetch(first ? "/api/auth/setup" : "/api/auth/login", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({password: $("#password").value})});
+      if (r.ok) { location.replace("/"); return; }
+      const d = await r.json().catch(() => ({}));
+      $("#err").textContent = d.detail && typeof d.detail === "string" ? d.detail : (r.status === 429 ? "Too many attempts. Wait a minute." : "Could not sign in.");
+    } catch { $("#err").textContent = "Cannot reach the wall."; }
+    $("#submit").disabled = false;
+  };
+})();
+</script>
+</body>
+</html>

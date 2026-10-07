@@ -5,13 +5,14 @@ Software for a 128 x 192 LED wall: six 64x64 P3 HUB75 panels on a Raspberry Pi 3
 ```
 engine/   C++ display engine (owns the matrix, frame loop, brightness and limiter, light sensor,
           media playback, control and preview sockets)
-web/      Python package `ledposter` (so far: the media transcoder)
+web/      Python package `ledposter`: FastAPI web app + REST API, transcoder, engine client
+web/static  the PWA (vanilla JS, no build step)
 config/   example YAML configs (all hardware tunables live here)
 vendor/   hzeller/rpi-rgb-led-matrix (git submodule, pinned)
-docs/     spec, architecture contracts, engine socket protocol (protocol.md), deviations
+docs/     spec, architecture contracts, engine socket protocol (protocol.md), UI references, deviations
 ```
 
-Status: **milestone 3**, brightness. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 adds the ffmpeg transcoder (any supported upload to cached raw 128x192 RGB24 frames with their timings, fit/fill/stretch, smooth/pixel filters, crop and position, gamma, optional dithering) and engine playback of cached media and playlists. Milestone 3 adds the brightness chain (user brightness, BH1750 auto brightness on a log lux curve with smoothing, `min(user, auto)`, then the power limiter so the estimate never exceeds `power.ceiling_amps`), and the engine's two Unix sockets: control (newline-delimited JSON commands and `status` with the current estimate) and preview (status line + output frame, up to 15fps). See [docs/protocol.md](docs/protocol.md).
+Status: **milestone 4**, the web app. Milestone 1 gave config-driven matrix init, the 128x192 canvas mapped onto the 6-panel snake, test patterns and the power limiter. Milestone 2 added the ffmpeg transcoder and engine playback of cached media and playlists. Milestone 3 added the brightness chain, BH1750 auto brightness and the control/preview sockets. Milestone 4 adds the web app: login, live preview over WebSocket, controls, media library with upload and transcode status, playlist editor, schedule, settings, and a REST API with OpenAPI at `/docs`.
 
 ## Wiring assumptions
 
@@ -218,6 +219,53 @@ Things to check and report (paste the `status` lines):
 9. **Reload**: edit `brightness.user` in `$LEDPOSTER_DATA/config.yaml`, then `ctl '{"cmd":"reload_config"}'` applies it (`restart_needed: []`). Change `gpio_slowdown` and reload: `restart_needed: ["matrix"]`.
 
 With all six panels use `config.example.yaml` as is (13A ceiling): full white shows `est 12.96A (limited), brightness 36%`.
+## Web app
+
+```sh
+cd web
+.venv/bin/pip install -r requirements.txt
+LEDPOSTER_DATA=~/lpdata .venv/bin/python -m ledposter --port 8080   # port defaults to config web.port
+```
+
+Open `http://<pi>:8080/`. The first visit asks for an admin password (stored as a scrypt hash in `config.yaml`); everything under `/api` and the app itself need the session cookie or an API token (`Authorization: Bearer lp_...`, created in Settings). The API is documented at `/docs` (OpenAPI at `/openapi.json`); every button in the UI is one of those endpoints. The live preview is a WebSocket at `/api/preview`: one text message with the engine status, then one binary frame of `w*h*3` RGB bytes, up to 15 a second.
+
+Uploads go to `$LEDPOSTER_DATA/media/<id>/` and are transcoded one at a time by a background worker with `ledposter.transcode`; the item's settings (scale, filter, crop, position, speed, dither) can be changed in the editor, which re-transcodes. Playlists are written to the config's `playlists:` section in the engine's format, followed by `reload_config`. The schedule (on/off times, quiet-hours brightness cap) is enforced by the web app's own scheduler task. If the engine is down the app keeps working for the library and settings and shows "engine offline" until it reconnects.
+
+Dev without a Pi: `python tests/fake_engine.py /tmp/lpsock` serves the two sockets with a moving test image; point `engine.socket`/`engine.preview_socket` at them. Or build the real engine with `cd engine && make sim`.
+
+## Testing milestone 4 on the Pi
+
+Pull, install the new Python packages and run the tests:
+
+```sh
+cd ~/ledposter && git pull && git submodule update
+cd web && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest -q
+```
+
+Expected: `46 passed` (transcoder, auth, config, media, playlists, schedule, preview relay against a fake engine).
+
+Start the engine (M3) and then the web app on port 8080 (systemd units come in M8), with the same data dir:
+
+```sh
+export LEDPOSTER_DATA=~/lpdata
+cd ~/ledposter/engine && sudo -E ./ledengine &            # or your usual way of running it
+cd ~/ledposter/web && .venv/bin/python -m ledposter --port 8080
+```
+
+On your phone (same Wi-Fi) open `http://<pi-ip>:8080/` and check:
+
+- First visit: "Set an admin password" screen; after Continue you land on Home. Open the URL in a private window: it asks to sign in, and `curl http://<pi-ip>:8080/api/status` answers `401`.
+- Home: the preview shows what the panel shows (dots view, toggle to flat), with `mode · fps · A` pills under it. Move the brightness slider: the panel follows live, the status `brightness.user` changes. Power toggle in the header turns the panel off and on.
+- Modes: tap Panel ID, Colour cycle, Row sweep: the panel switches right away and the card gets the amber active state. Solid colour's "..." opens the colour sheet.
+- Library: upload a GIF and a phone video. The tile shows "Converting..." then the thumbnail with duration. A 1080p 30s MP4 should be ready in under 2 minutes (report the time). Upload a `.txt` renamed `.mp4`: the tile gets a red "!" and the sheet says what went wrong plus the formats that work.
+- Tap a ready item: the editor previews it; switch Fit/Fill, move the position sliders (the preview updates client-side), Save re-converts it. "Play on wall" shows it on the panel.
+- Playlist: New, + Add two items, drag the handle to reorder, tap a duration chip, Play. The engine's log shows the playlist name; `config.yaml` has it under `playlists:`.
+- Schedule: set Off to two minutes from now and enable it: the panel turns off at that time. Enable quiet hours covering now with max 10%: the slider's value stays but the panel dims and Home says "Quiet hours: capped at 10%".
+- Settings: change the admin password (other devices get signed out), create an API token and try `curl -H "Authorization: Bearer lp_..." http://<pi-ip>:8080/api/status`, revoke it and the same call answers `401`. Matrix: change slowdown and Save: the toast says a restart is needed and `config.yaml` has the new value. Panel ID test shows the pattern.
+- Install: Chrome/Safari "Add to Home Screen" gives a standalone dark app. Stop the engine (`Ctrl-C`): the app shows "Engine offline", the library still opens; start it again and the preview resumes within a few seconds.
+
+Report: the transcode time for your biggest video, whether the preview keeps up with the panel (it should be within about 200ms), and anything that looked wrong on your phone's screen size.
 
 ## Troubleshooting
 

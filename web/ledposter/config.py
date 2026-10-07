@@ -1,0 +1,102 @@
+"""Owns $LEDPOSTER_DATA/config.yaml: read with defaults, atomic write (docs/ARCHITECTURE.md).
+
+The web app is the only writer. Every write goes through save(): tmp file, fsync,
+rename, fsync dir, mode 600 (the file holds the admin password hash and token hashes).
+"""
+import copy
+import os
+import tempfile
+
+import yaml
+
+DEFAULTS = {
+    "version": 1,
+    "matrix": {
+        "hardware_mapping": "adafruit-hat-pwm",
+        "panel_size": 64,
+        "gpio_slowdown": 2,
+        "pwm_bits": 9,
+        "show_refresh_rate": False,
+        "panels": [{"col": 0, "row": 0}, {"col": 1, "row": 0}, {"col": 1, "row": 1},
+                   {"col": 0, "row": 1}, {"col": 0, "row": 2}, {"col": 1, "row": 2}],
+    },
+    "power": {"ceiling_amps": 13.0, "amps_full_white_per_panel": 6.0},
+    "display": {"gamma": 2.2},
+    # brightness.user is the slider; the engine reads both at start and on reload_config
+    "brightness": {"user": 100, "auto": True},
+    "engine": {"socket": "/run/ledposter/engine.sock", "preview_socket": "/run/ledposter/frames.sock"},
+    "web": {"port": 8080, "admin_password": None, "tokens": []},
+    "playlists": {},
+    "schedule": {
+        "enabled": False, "on": "07:00", "off": "23:00", "days": [0, 1, 2, 3, 4, 5, 6],
+        "quiet": {"enabled": False, "start": "22:00", "end": "07:00", "max_brightness": 20},
+    },
+    "mqtt": {"enabled": False, "host": "", "port": 1883, "username": "", "password": ""},  # M7
+    "ddp": {"enabled": False},  # M7
+}
+
+
+def data_dir():
+    return os.environ.get("LEDPOSTER_DATA") or "/data"
+
+
+def path():
+    return os.path.join(data_dir(), "config.yaml")
+
+
+def load(p=None):
+    """Config dict with every DEFAULTS section present (missing keys filled in, nothing removed)."""
+    p = p or path()
+    cfg = {}
+    if os.path.exists(p):
+        with open(p) as f:
+            cfg = yaml.safe_load(f) or {}
+        if not isinstance(cfg, dict):
+            raise ValueError(f"{p}: top level must be a mapping")
+    for key, default in DEFAULTS.items():
+        if key == "playlists":
+            cfg.setdefault(key, {})
+        elif isinstance(default, dict):
+            section = cfg.setdefault(key, {})
+            for k, v in default.items():
+                section.setdefault(k, copy.deepcopy(v))
+        else:
+            cfg.setdefault(key, default)
+    cfg["version"] = cfg.get("version") or DEFAULTS["version"]
+    return cfg
+
+
+def save(cfg, p=None):
+    p = p or path()
+    d = os.path.dirname(os.path.abspath(p))
+    os.makedirs(d, exist_ok=True)
+    out = dict(cfg)
+    out["version"] = cfg.get("version") or DEFAULTS["version"]
+    out = {"version": out.pop("version"), **out}  # version stays the first key
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".config.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(fd, 0o600)
+            yaml.safe_dump(out, f, sort_keys=False, default_flow_style=None)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    dfd = os.open(d, os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def canvas_size(cfg):
+    """Logical canvas (w, h) from the panel layout, as the engine computes it."""
+    m = cfg["matrix"]
+    size = int(m.get("panel_size", 64))
+    panels = m.get("panels") or [{"col": 0, "row": 0}]
+    cols = max(int(p.get("col", 0)) for p in panels) + 1
+    rows = max(int(p.get("row", 0)) for p in panels) + 1
+    return size * cols, size * rows
