@@ -4,7 +4,8 @@
 // Installed by system/install.sh as /etc/polkit-1/rules.d/50-ledposter-system.rules.
 //
 // - start:   firewall, SSH mode, software update, factory reset, maintenance window
-// - restart: the engine and the web app themselves (Settings > Restart, and the updater)
+// - restart: the engine and the web app themselves (Settings > Restart). What they execute
+//   lives under the root-owned /data/app, so a restart runs root's code, not the app's.
 // - reboot through logind (`systemctl reboot` as a non-root user asks logind)
 polkit.addRule(function (action, subject) {
   if (subject.user != "ledposter") return polkit.Result.NOT_HANDLED;

@@ -1,8 +1,12 @@
 #!/bin/sh
 # Root-side helpers for the LED wall's system actions (milestone 8), run by the units in
 # system/systemd. Installed as /usr/local/bin/ledposter-sys. Every action reads its input from
-# a file under $LEDPOSTER_DATA that the web app wrote (ledposter.system), validates it, and
-# never takes arguments from the app itself.
+# a file at the top of $LEDPOSTER_DATA that the web app wrote (ledposter.system), validates it,
+# and never takes arguments from the app itself. The web app runs as the unprivileged
+# `ledposter` user, so its files are untrusted: `input` opens them without following symlinks
+# and refuses anything but a regular file it owns; every line is matched against a strict
+# pattern and used as data (never sourced, eval'd or handed to a shell); root only creates
+# and chowns directories it has just made; $data/state, $data/app and $data/logs are root's.
 #
 #   ledposter-sys firewall          apply $data/firewall.rules with ufw (reset, rules, enable)
 #   ledposter-sys ssh               apply $data/ssh/mode (+ authorized_keys): sshd drop-in, start/stop ssh
@@ -11,54 +15,129 @@
 #   ledposter-sys factory-reset     if $data/factory-reset exists: wipe, fresh config, reboot into setup
 #   ledposter-sys maintenance timer|now|resume   the unattended-upgrades window (docs/DEVIATIONS.md)
 #   ledposter-sys overlay on|off|status          the read-only root overlay (raspi-config)
+#   ledposter-sys input NAME        print $data/NAME if it is a file the web app may hand to root
+#   ledposter-sys layout            create what is missing of the data dir's layout (installer, boot)
 set -eu
 
 data="${LEDPOSTER_DATA:-/data}"
 state="$data/state"
-# Mirrors ledposter.system.RULE_RE / KEY_RE: the only lines accepted from the app's files.
+svc_user=ledposter
+# Mirrors ledposter.system.RULE_RE / KEY_RE / MAINT_RE: the only lines accepted from the app's files.
 rule_re='^(default (deny|allow) (incoming|outgoing)|logging off|allow [0-9]{1,5}/(tcp|udp)|allow in on [a-z0-9.-]{1,15} to any port [0-9]{1,5} proto (tcp|udp))$'
 key_re='^(sk-)?(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521))(@openssh\.com)? AAAA[A-Za-z0-9+/]+={0,3}( [^ ].*)?$'
+maint_re='^(ENABLED|DAY|HOUR)=[0-9]+$'
 
 say() { echo "ledposter-sys: $*"; }
 die() { echo "ledposter-sys: $*" >&2; exit 1; }
 
-overlay_active() { grep -Eq 'overlayroot=tmpfs|boot=overlay' /proc/cmdline; }
+overlay_active() { grep -Eq 'overlayroot=tmpfs|boot=overlay' /proc/cmdline 2> /dev/null; }
+data_present() { [ -d "$state" ]; }  # the installer made state/; an unmounted /data is an empty dir
 
-# Every line of $1 must match $2; refuses the whole file otherwise.
+# input NAME: prints $data/NAME (NAME may be dir/file, no `..`). Exit 2 when it does not exist,
+# 1 when it is refused: a symlink anywhere below $data, not a regular file, not owned by the
+# service user (or root), over 64KB, or not text. Python has O_NOFOLLOW and dir_fd; sh does not.
+input() {
+  case "$1" in */../* | ../* | */.. | .. | /* | "") die "bad input name '$1'" ;; esac
+  python3 -I -S - "$data" "$1" "$svc_user" <<'EOF'
+import os, pwd, stat, sys
+data, name, user = sys.argv[1:4]
+owners = {0, os.getuid()}  # root, whoever runs this (tests), and the service user
+try:
+    owners.add(pwd.getpwnam(user).pw_uid)
+except KeyError:
+    pass
+flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY
+fd = os.open(data, flags | os.O_DIRECTORY)
+parts = name.split("/")
+for i, part in enumerate(parts):
+    try:
+        nfd = os.open(part, flags, dir_fd=fd)
+    except FileNotFoundError:
+        sys.exit(2)
+    except OSError as e:
+        sys.exit(f"ledposter-sys: refusing {data}/{name}: {e.strerror} (a symlink?)")
+    os.close(fd)
+    fd = nfd
+    st = os.fstat(fd)
+    last = i == len(parts) - 1
+    if (stat.S_ISREG(st.st_mode) if last else stat.S_ISDIR(st.st_mode)) is False:
+        sys.exit(f"ledposter-sys: refusing {data}/{name}: not a regular {'file' if last else 'directory'}")
+    if st.st_uid not in owners:
+        sys.exit(f"ledposter-sys: refusing {data}/{name}: owned by uid {st.st_uid}, not {user}")
+if st.st_size > 65536:
+    sys.exit(f"ledposter-sys: refusing {data}/{name}: too big")
+text = os.read(fd, 65537)
+if len(text) > 65536 or b"\0" in text:
+    sys.exit(f"ledposter-sys: refusing {data}/{name}: too big or not text")
+sys.stdout.write(text.decode("utf-8", "replace"))
+EOF
+}
+
+# Every non-empty line on stdin must match $2; names the first bad one and fails otherwise.
 check_lines() {
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    echo "$line" | grep -Eq "$2" || die "refusing line in $1: $line"
-  done < "$1"
+    printf '%s\n' "$line" | grep -Eq "$2" || { echo "ledposter-sys: refusing line in $1: $line" >&2; return 1; }
+  done
+}
+
+# A directory root creates for the service user (media, ssh, logs/web): made and chowned in
+# one go so nothing can be swapped in between; an existing one is left exactly as it is.
+user_dir() {
+  if [ -L "$1" ]; then die "$1 is a symlink; refusing"; fi
+  [ -d "$1" ] && return 0
+  mkdir "$1" || die "could not create $1"
+  if [ "$(id -u)" = 0 ]; then chown "$svc_user:$svc_user" "$1" || die "could not chown $1"; fi  # tests run this unprivileged
+  chmod 755 "$1"
+}
+root_dir() {
+  if [ -L "$1" ]; then die "$1 is a symlink; refusing"; fi
+  [ -d "$1" ] || mkdir "$1" || die "could not create $1"
 }
 
 firewall() {
-  rules="$data/firewall.rules"
-  if [ ! -f "$rules" ]; then  # before the web app ever ran: the defaults (HTTP, mDNS, hotspot DHCP/DNS)
-    rules="$(mktemp)"
-    printf '%s\n' 'default deny incoming' 'default allow outgoing' 'logging off' 'allow 80/tcp' 'allow 5353/udp' \
+  if ! data_present; then say "$data is not there (unmounted?): leaving the firewall as it was"; exit 0; fi
+  rules="$(input firewall.rules)" && rc=0 || rc=$?
+  if [ "$rc" = 2 ]; then  # before the web app ever ran: the defaults (HTTP, mDNS, hotspot DHCP/DNS)
+    rules="$(printf '%s\n' 'default deny incoming' 'default allow outgoing' 'logging off' 'allow 80/tcp' 'allow 5353/udp' \
       'allow in on wlan0 to any port 67 proto udp' 'allow in on wlan0 to any port 53 proto udp' \
-      'allow in on wlan0 to any port 53 proto tcp' > "$rules"
+      'allow in on wlan0 to any port 53 proto tcp')"
     say "no $data/firewall.rules yet, applying the defaults"
+  elif [ "$rc" != 0 ]; then
+    die "firewall.rules refused; leaving the firewall as it was"
   fi
-  check_lines "$rules" "$rule_re"
+  printf '%s\n' "$rules" | check_lines firewall.rules "$rule_re" || exit 1
   ufw --force reset > /dev/null
-  while IFS= read -r line || [ -n "$line" ]; do
+  printf '%s\n' "$rules" | while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
     # shellcheck disable=SC2086  # the rule is ufw's argument list, validated above
     ufw $line > /dev/null
-  done < "$rules"
+  done
   ufw --force enable > /dev/null
-  say "firewall: $(grep -c . "$rules") rules applied"
+  say "firewall: $(printf '%s\n' "$rules" | grep -c .) rules applied"
 }
 
 ssh_mode() {
-  mode="$(head -n 1 "$data/ssh/mode" 2>/dev/null || echo disabled)"
+  if ! data_present; then
+    # /data did not mount: keep the mode the installer (or the last maintenance boot, when the
+    # root was writable) left in /etc/ssh, so the wall stays reachable to fix it.
+    if [ -s /etc/ssh/ledposter_authorized_keys ] && [ -f /etc/ssh/sshd_config.d/10-ledposter.conf ]; then
+      systemctl start ssh.service && say "$data is not there: ssh stays key-only with the installed keys"
+    else
+      say "$data is not there: ssh stays disabled"
+    fi
+    exit 0
+  fi
+  mode="$(input ssh/mode)" && rc=0 || rc=$?
+  [ "$rc" != 1 ] || die "ssh/mode refused; leaving SSH as it is"
+  mode="$(printf '%s\n' "$mode" | head -n 1)"
   if [ "$mode" = "key-only" ]; then
-    keys="$data/ssh/authorized_keys"
-    [ -s "$keys" ] || die "key-only SSH but $keys is empty; leaving SSH as it is"
-    check_lines "$keys" "$key_re"
-    install -m 644 -o root -g root "$keys" /etc/ssh/ledposter_authorized_keys
+    keys="$(input ssh/authorized_keys)" || die "ssh/authorized_keys refused; leaving SSH as it is"
+    [ -n "$keys" ] || die "key-only SSH but $data/ssh/authorized_keys is empty; leaving SSH as it is"
+    printf '%s\n' "$keys" | check_lines ssh/authorized_keys "$key_re" || exit 1
+    # /etc is the read-only root (or its overlay): only root writes there, so plain writes are fine.
+    printf '%s\n' "$keys" > /etc/ssh/ledposter_authorized_keys
+    chmod 644 /etc/ssh/ledposter_authorized_keys
     mkdir -p /etc/ssh/sshd_config.d
     cat > /etc/ssh/sshd_config.d/10-ledposter.conf <<'EOF'
 # Written by ledposter-sys ssh at every boot (the root is a read-only overlay). Key-only.
@@ -71,8 +150,9 @@ AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/ledposter_authorized_keys
 EOF
     sshd -t || { rm -f /etc/ssh/sshd_config.d/10-ledposter.conf; die "sshd rejected the config; drop-in removed"; }
     systemctl reload-or-restart ssh.service
-    say "ssh: key-only, $(grep -c . "$keys") key(s)"
+    say "ssh: key-only, $(printf '%s\n' "$keys" | grep -c .) key(s)"
   else
+    rm -f /etc/ssh/ledposter_authorized_keys
     systemctl stop ssh.service ssh.socket 2> /dev/null || true
     say "ssh: disabled"
   fi
@@ -80,20 +160,32 @@ EOF
 
 set_hostname() {
   name="$1"
-  echo "$name" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' || die "bad hostname '$name'"
+  printf '%s\n' "$name" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' || die "bad hostname '$name'"
   if ! hostnamectl set-hostname "$name" 2> /dev/null; then  # hostnamed not up yet (boot)
     hostname "$name" || say "could not set the kernel hostname (container?)"
     echo "$name" > /etc/hostname
   fi
-  mkdir -p "$state"
+  root_dir "$state"
   echo "$name" > "$state/hostname"
   if command -v ledposter-net > /dev/null; then
     LEDPOSTER_DATA="$data" ledposter-net hosts || say "could not update /etc/hosts"
   fi
 }
 
+# The data dir's layout (docs/ARCHITECTURE.md): $data itself root:ledposter 1775 (sticky, so
+# the service user can add its own files but not rename or remove root's), app/ state/ logs/
+# root's, media/ ssh/ logs/web/ the service user's. Only creates what is missing.
+layout() {
+  root_dir "$state"
+  root_dir "$data/logs"
+  user_dir "$data/media"
+  user_dir "$data/ssh"
+  user_dir "$data/logs/web"
+}
+
 boot() {
-  mkdir -p "$state" "$data/media" "$data/logs" "$data/ssh"
+  if ! data_present; then say "$data is not there (unmounted?): nothing to restore"; exit 0; fi
+  layout
   if [ -s "$state/hostname" ]; then
     name="$(head -n 1 "$state/hostname")"
     [ "$(hostname)" = "$name" ] || set_hostname "$name"
@@ -107,7 +199,7 @@ boot() {
 }
 
 factory_reset() {
-  [ -f "$data/factory-reset" ] || { say "no reset requested"; exit 0; }
+  [ -e "$data/factory-reset" ] || { say "no reset requested"; exit 0; }
   say "factory reset: wiping $data (keeping app/, setup-password, state/)"
   systemctl stop ledposter-web.service 2> /dev/null || true
   if command -v nmcli > /dev/null; then  # every Wi-Fi profile, the hotspot included
@@ -116,16 +208,16 @@ factory_reset() {
     done
   fi
   set_hostname ledposter || true
+  # rm -r never follows symlinks, so whatever the app left here is only unlinked, not entered.
   for p in "$data"/* "$data"/.[!.]*; do
-    [ -e "$p" ] || continue
+    [ -e "$p" ] || [ -L "$p" ] || continue
     case "$(basename "$p")" in app | setup-password | state | lost+found) continue ;; esac
     rm -rf "$p"
   done
-  mkdir -p "$data/media" "$data/logs" "$data/ssh"
-  chown ledposter:ledposter "$data/media" "$data/logs" "$data/ssh"
+  layout
   web="$data/app/current/web"
-  if [ -x "$web/.venv/bin/python" ]; then
-    (cd "$web" && LEDPOSTER_DATA="$data" runuser -u ledposter -- "$web/.venv/bin/python" -m ledposter.system init-config "$data/config.yaml")
+  if [ -x "$web/.venv/bin/python" ]; then  # as the service user: the config and unit inputs are its files
+    (cd "$web" && LEDPOSTER_DATA="$data" runuser -u "$svc_user" -- "$web/.venv/bin/python" -m ledposter.system init-config "$data/config.yaml")
   fi
   firewall
   ssh_mode || true
@@ -134,7 +226,7 @@ factory_reset() {
   systemctl reboot
 }
 
-log_maint() { mkdir -p "$data/logs"; echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$data/logs/maintenance.log"; }
+log_maint() { root_dir "$data/logs"; echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$data/logs/maintenance.log"; }
 
 upgrade() {
   log_maint "apt-get update + unattended-upgrade starting"
@@ -146,7 +238,7 @@ upgrade() {
 }
 
 maintenance_begin() {
-  mkdir -p "$state"
+  root_dir "$state"
   if overlay_active; then
     date > "$state/maintenance-pending"
     sync
@@ -163,14 +255,28 @@ maintenance_begin() {
   fi
 }
 
-maintenance() {
+# $data/maintenance.conf from Settings: ENABLED=0|1, DAY=0..6 (0 = Monday), HOUR=0..23. Parsed,
+# never sourced: every line must match maint_re and every value must be in range, else the
+# whole file is refused and the defaults (on, Sunday 04:00) apply.
+maintenance_conf() {
   ENABLED=1 DAY=6 HOUR=4
-  # shellcheck disable=SC1091  # written by the web app: ENABLED=, DAY= (0 = Monday), HOUR=
-  [ -f "$data/maintenance.conf" ] && . "$data/maintenance.conf"
+  conf="$(input maintenance.conf)" && rc=0 || rc=$?
+  [ "$rc" = 2 ] && return 0
+  [ "$rc" = 0 ] || die "maintenance.conf refused"
+  printf '%s\n' "$conf" | check_lines maintenance.conf "$maint_re" || die "maintenance.conf refused"
+  e="$(printf '%s\n' "$conf" | sed -En 's/^ENABLED=([01])$/\1/p' | head -n 1)"
+  d="$(printf '%s\n' "$conf" | sed -En 's/^DAY=([0-6])$/\1/p' | head -n 1)"
+  h="$(printf '%s\n' "$conf" | sed -En 's/^HOUR=([0-9]|1[0-9]|2[0-3])$/\1/p' | head -n 1)"
+  [ -n "$e" ] && [ -n "$d" ] && [ -n "$h" ] || die "maintenance.conf refused: a value is missing or out of range"
+  ENABLED="$e" DAY="$d" HOUR="$h"
+}
+
+maintenance() {
   case "${1:-timer}" in
     timer)
-      if [ -f "$state/maintenance-request" ]; then
-        rm -f "$state/maintenance-request"
+      maintenance_conf  # only the timer reads Settings; `now` and `resume` must work whatever the app wrote
+      if [ -e "$data/maintenance-request" ] || [ -L "$data/maintenance-request" ]; then  # "Run now" from Settings
+        rm -f "$data/maintenance-request"
         maintenance_begin
         exit 0
       fi
@@ -203,7 +309,7 @@ maintenance() {
 overlay() {
   command -v raspi-config > /dev/null || die "raspi-config not found (not Raspberry Pi OS?)"
   case "${1:-status}" in
-    on) raspi-config nonint enable_overlayfs && { mkdir -p "$state"; touch "$state/overlay-wanted"; } ;;
+    on) raspi-config nonint enable_overlayfs && { root_dir "$state"; touch "$state/overlay-wanted"; } ;;
     off)
       raspi-config nonint disable_overlayfs
       if [ "${2:-}" != keep ]; then rm -f "$state/overlay-wanted"; fi ;;
@@ -223,7 +329,9 @@ case "${1:-}" in
   factory-reset) factory_reset ;;
   maintenance) maintenance "${2:-timer}" ;;
   overlay) overlay "${2:-status}" "${3:-}" ;;
+  input) input "${2:?name}" ;;
+  layout) layout ;;
   *)
-    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
     exit 2 ;;
 esac

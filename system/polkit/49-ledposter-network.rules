@@ -1,7 +1,12 @@
 // Lets the `ledposter` service user (M8 runs the web app as it) do the networking the app
 // needs without root or sudo. Installed by M8 as /etc/polkit-1/rules.d/49-ledposter-network.rules.
 //
-// - NetworkManager: scan, connect, add/modify profiles, raise the shared-mode hotspot.
+// - NetworkManager, only the actions web/ledposter/net.py's nmcli calls need:
+//   network-control (connection up/down, dev wifi connect, device reapply),
+//   settings.modify.system (connection add/modify/delete: the profiles are system-wide),
+//   wifi.scan (dev wifi list --rescan), wifi.share.protected/open (the WPA2 setup hotspot in
+//   shared mode; `open` in case the password is ever dropped). Not granted: enable-disable-*,
+//   sleep-wake, reload, checkpoint-rollback, settings.modify.own/global-dns/hostname.
 // - hostnamed: set the hostname from Settings.
 // - systemd: only start/stop/restart two fixed units whose content root controls:
 //   ledposter-net-rollback.timer (revert a static IP to DHCP after 2 minutes) and
@@ -9,7 +14,12 @@
 //   The app cannot define transient units or touch anything else, so this is not a root path.
 polkit.addRule(function (action, subject) {
   if (subject.user != "ledposter") return polkit.Result.NOT_HANDLED;
-  if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0) return polkit.Result.YES;
+  var nm = ["org.freedesktop.NetworkManager.network-control",
+            "org.freedesktop.NetworkManager.settings.modify.system",
+            "org.freedesktop.NetworkManager.wifi.scan",
+            "org.freedesktop.NetworkManager.wifi.share.protected",
+            "org.freedesktop.NetworkManager.wifi.share.open"];
+  if (nm.indexOf(action.id) >= 0) return polkit.Result.YES;
   if (action.id == "org.freedesktop.hostname1.set-static-hostname" ||
       action.id == "org.freedesktop.hostname1.set-hostname") return polkit.Result.YES;
   if (action.id == "org.freedesktop.systemd1.manage-units") {

@@ -275,6 +275,9 @@ static json yaml_json(const YAML::Node &n) {
   return v;
 }
 
+// 100W PD supply, about 15A at 5V for the panels (docs/spec.md). Never a higher ceiling.
+static constexpr double kMaxCeilingAmps = 15.0;
+
 // Everything reload_config can change without a restart.
 struct Settings {
   double ceiling, amps_full;
@@ -295,6 +298,11 @@ static Settings load_settings(YAML::Node cfg) {
   s.ceiling = cfg["power"]["ceiling_amps"].as<double>(13.0);
   s.amps_full = cfg["power"]["amps_full_white_per_panel"].as<double>(6.0);
   check(s.ceiling > 0 && s.amps_full > 0, "power: ceiling_amps and amps_full_white_per_panel must be > 0");
+  if (s.ceiling > kMaxCeilingAmps) {  // the supply's panel budget (docs/spec.md); the web app refuses more too
+    fprintf(stderr, "power.ceiling_amps %.1f is above the %.0fA supply budget; clamped to %.0fA\n", s.ceiling,
+            kMaxCeilingAmps, kMaxCeilingAmps);
+    s.ceiling = kMaxCeilingAmps;
+  }
   s.lut = gamma_lut(cfg["display"]["gamma"].as<double>(2.2));
   YAML::Node b = cfg["brightness"], c = b["auto_curve"];
   s.user = b["user"].as<int>(cfg["matrix"]["brightness"].as<int>(100));  // M1/M2 configs

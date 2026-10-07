@@ -19,7 +19,7 @@ matrix:
     - {col: 1, row: 2}  # 6 bottom-right
 
 power:
-  ceiling_amps: 13.0               # frames are scaled down to never exceed this
+  ceiling_amps: 13.0               # frames are scaled down to never exceed this (15 max: the supply)
   amps_full_white_per_panel: 6.0   # calibration: measure one panel at full white and set this
 
 # effective brightness = min(user, auto), then the power limiter on top.

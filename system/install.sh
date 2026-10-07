@@ -8,13 +8,14 @@
 #                            [--hostname ledposter] [--no-overlay] [--data-dir PATH]
 #                            [--force-build] [--dry-run]
 #
-# What it does, in order: apt packages, the ledposter user, the /data partition (or --data-dir),
-# the release under /data/app (engine build + venv), the data files (config, setup password),
-# system files (units, polkit, avahi, dnsmasq, journald, NetworkManager, apt), persistence of
-# Wi-Fi profiles across the overlay, hostname, boot config (audio off, isolcpus=3, I2C), services,
-# firewall, SSH mode, and last the read-only overlay (needs a reboot). --dry-run prints every
-# action without doing it. Never locks you out: SSH is left as it is until the end and the
-# resulting mode is printed; over SSH without a key it refuses unless --ssh is given.
+# What it does, in order: apt packages, the ledposter and ledposter-build users, the /data
+# partition (or --data-dir), the release under /data/app (engine build + venv, built as
+# ledposter-build, owned by root), the data files (config, setup password), system files (units,
+# polkit, avahi, dnsmasq, journald, NetworkManager, apt), persistence of Wi-Fi profiles across
+# the overlay, hostname, boot config (audio off, isolcpus=3, I2C), services, firewall, SSH mode,
+# and last the read-only overlay (needs a reboot). --dry-run prints every action without doing
+# it. Never locks you out: SSH is left as it is until the end and the resulting mode is printed;
+# over SSH without a key it refuses unless --ssh is given.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,6 +28,7 @@ NO_OVERLAY=0
 FORCE_BUILD=0
 DRY=0
 SVC_USER=ledposter
+BUILD_USER=ledposter-build  # compiles and pip-installs releases; owns nothing that root runs
 # The one place the apt list lives. overlayroot is what raspi-config's overlay uses on
 # current Bookworm; older raspi-config builds do not need it and apt skips what it lacks.
 PACKAGES="git build-essential libyaml-cpp-dev nlohmann-json3-dev ffmpeg python3 python3-venv python3-pip
@@ -37,9 +39,9 @@ DISABLE_UNITS="bluetooth.service hciuart.service triggerhappy.service ModemManag
   apt-daily-upgrade.timer man-db.timer dphys-swapfile.service e2scrub_all.timer"
 ENABLE_UNITS="ledposter-boot.service ledposter-engine.service ledposter-web.service ledposter-firewall.service
   ledposter-ssh.service ledposter-update.service ledposter-maintenance.timer ledposter-maintenance-resume.service
-  avahi-daemon.service NetworkManager.service"
+  ledposter-net-rollback.service avahi-daemon.service NetworkManager.service"
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -80,6 +82,14 @@ write() {
   mv -f "$path.tmp" "$path"
 }
 inst() { run install -D -m "$1" "$2" "$3"; }  # mode src dst
+# A directory with a fixed owner and mode; never follows a symlink that may be in the way.
+owned_dir() {  # owner mode path
+  if [ -L "$3" ]; then die "$3 is a symlink; refusing to touch it"; fi
+  run mkdir -p "$3"
+  run chown "$1" "$3"
+  run chmod "$2" "$3"
+}
+as_build() { run runuser -u "$BUILD_USER" -- env HOME="$DATA/app/build" PIP_CACHE_DIR="$DATA/app/build/pip-cache" LANG=C.UTF-8 "$@"; }
 have() { command -v "$1" > /dev/null 2>&1; }
 have_systemd() { [ -d /run/systemd/system ]; }
 is_pi() { [ -f /boot/firmware/config.txt ] && have raspi-config; }
@@ -141,11 +151,13 @@ step_apt() {
 }
 
 step_user() {
-  log "Service user $SVC_USER"
-  if ! have getent || ! getent group "$SVC_USER" > /dev/null; then run groupadd --system "$SVC_USER"; fi
-  if ! id "$SVC_USER" > /dev/null 2>&1; then
-    run useradd --system --gid "$SVC_USER" --home-dir "$DATA/app" --no-create-home --shell /usr/sbin/nologin "$SVC_USER"
-  fi
+  log "Service user $SVC_USER, build user $BUILD_USER"
+  for u in "$SVC_USER" "$BUILD_USER"; do
+    if ! have getent || ! getent group "$u" > /dev/null; then run groupadd --system "$u"; fi
+    if ! id "$u" > /dev/null 2>&1; then
+      run useradd --system --gid "$u" --home-dir "$DATA/app" --no-create-home --shell /usr/sbin/nologin "$u"
+    fi
+  done
   for g in gpio i2c video; do  # the engine drops to this user: GPIO/I2C access after the drop
     if have getent && getent group "$g" > /dev/null; then run usermod -aG "$g" "$SVC_USER"; fi
   done
@@ -204,7 +216,9 @@ step_data() {
   fi
   partuuid="$(blkid -s PARTUUID -o value "$dev" 2> /dev/null || echo "XXXX-XX")"
   if ! in_file " /data " /etc/fstab; then
-    local line="PARTUUID=$partuuid  /data  ext4  defaults,noatime,commit=15,x-systemd.device-timeout=10  0  2"
+    # nofail: a missing or broken data partition must not drop the boot into emergency mode; the
+    # wall's units require the mount themselves, SSH falls back to the installed keys (README).
+    local line="PARTUUID=$partuuid  /data  ext4  defaults,nofail,noatime,commit=15,x-systemd.device-timeout=10  0  2"
     note "fstab: $line"
     if [ "$DRY" = 0 ]; then echo "$line" >> /etc/fstab; fi
   fi
@@ -215,7 +229,13 @@ step_data() {
 
 step_release() {
   log "Release $VERSION under $DATA/app"
-  run mkdir -p "$DATA/app/releases" "$DATA/app/pip-cache"
+  # /data/app is root's: the engine runs from it as root, so the web app (user ledposter) may
+  # read and execute but never write here. make/venv/pip run as ledposter-build in the release
+  # dir, which root then takes over (same as web/ledposter/updater.py; docs/DEVIATIONS.md).
+  owned_dir root:root 755 "$DATA/app"
+  owned_dir root:root 755 "$DATA/app/releases"
+  owned_dir "$BUILD_USER:$BUILD_USER" 700 "$DATA/app/build"
+  run rm -rf "$DATA/app/pip-cache"  # m8 kept the pip cache here, owned by ledposter
   if [ -f "$REL/.ready" ] && [ "$FORCE_BUILD" = 0 ]; then
     note "already built (use --force-build to rebuild)"
   else
@@ -226,11 +246,13 @@ step_release() {
     else
       run git -C "$REL" submodule update --init
     fi
-    note "building the engine (a few minutes on a Pi 3B)"
-    run make -C "$REL/engine" -j2
-    run python3 -m venv --system-site-packages "$REL/web/.venv"
-    run env PIP_CACHE_DIR="$DATA/app/pip-cache" "$REL/web/.venv/bin/pip" install -q --retries 5 --timeout 60 -r "$REL/web/requirements.txt"
-    run make -C "$REL/engine" test
+    note "building the engine as $BUILD_USER (a few minutes on a Pi 3B)"
+    run chown -R "$BUILD_USER:$BUILD_USER" "$REL"
+    as_build make -C "$REL/engine" -j2
+    as_build python3 -m venv --system-site-packages "$REL/web/.venv"
+    as_build "$REL/web/.venv/bin/pip" install -q --retries 5 --timeout 60 -r "$REL/web/requirements.txt"
+    as_build make -C "$REL/engine" test
+    run chown -R root:root "$REL"
     run touch "$REL/.ready"
   fi
   run ln -sfn "releases/$VERSION" "$DATA/app/.current.tmp"
@@ -244,35 +266,68 @@ step_release() {
     note "creating the read-only deploy key $DATA/app/deploy_key"
     run ssh-keygen -q -t ed25519 -N "" -C "ledposter-$WANT_HOSTNAME" -f "$DATA/app/deploy_key"
   fi
-  run chown -R "$SVC_USER:$SVC_USER" "$DATA/app"
-  run chmod 600 "$DATA/app/deploy_key"
+  # The key is read-only on GitHub; group ledposter so "Check for updates" (git ls-remote in
+  # the web app) can use it. Root's otherwise.
+  run chown -h root:root "$DATA/app/origin" "$DATA/app/deploy_key.pub"
+  run chown -h "root:$SVC_USER" "$DATA/app/deploy_key"
+  run chmod 640 "$DATA/app/deploy_key"
+  if [ -f "$DATA/app/token" ]; then run chown -h "root:$SVC_USER" "$DATA/app/token"; run chmod 640 "$DATA/app/token"; fi
+  if [ ! -s "$DATA/app/known_hosts" ] && have ssh-keyscan; then  # pinned host keys for the updater's git over ssh
+    if [ "$DRY" = 1 ]; then note "+ ssh-keyscan github.com > $DATA/app/known_hosts"; else
+      if ssh-keyscan -T 10 -t ed25519,ecdsa,rsa github.com > "$DATA/app/known_hosts.tmp" 2> /dev/null; then
+        mv -f "$DATA/app/known_hosts.tmp" "$DATA/app/known_hosts"
+      else
+        rm -f "$DATA/app/known_hosts.tmp"; warn "could not reach github.com to pin its host key; the first update accepts it"
+      fi
+    fi
+  fi
+  # Anything left over from an m8 install (owned by ledposter) becomes root's; -h/-P: no symlink is followed.
+  run chown -h -R root:root "$DATA/app/releases" "$DATA/app/current"
+  [ -L "$DATA/app/previous" ] && run chown -h root:root "$DATA/app/previous"
+  for f in update.json pending.json; do [ -f "$DATA/app/$f" ] && run chown -h root:root "$DATA/app/$f"; done
+  run rm -f "$DATA/app/update-request.json"  # m8 kept the request here; it is now $DATA/update-request.json
+  return 0
 }
 
 step_files() {
   log "Data files"
-  run mkdir -p "$DATA/media" "$DATA/logs" "$DATA/ssh" "$DATA/state"
+  # The layout (docs/ARCHITECTURE.md): $DATA root:ledposter 1775, so the web app can add its
+  # own files (config.yaml, secret, the unit inputs) but cannot rename or remove root's app/,
+  # state/ and logs/; media/, ssh/ and logs/web/ are the web app's. Root never follows a path
+  # the app owns: ledposter-sys layout only creates what is missing and chowns what it made.
+  owned_dir "root:$SVC_USER" 1775 "$DATA"
+  owned_dir root:root 755 "$DATA/state"
+  if [ -d "$DATA/logs" ] && [ ! -L "$DATA/logs" ] && [ "$(stat -c %u "$DATA/logs")" != 0 ]; then  # an m8 install: logs/ was ledposter's
+    run chown -h root:root "$DATA/logs"
+    for f in update.log maintenance.log; do [ -f "$DATA/logs/$f" ] && run chown -h root:root "$DATA/logs/$f"; done
+    run rm -f "$DATA/logs"/web.log*
+  fi
+  if [ "$DRY" = 1 ]; then note "+ ledposter-sys layout"; else LEDPOSTER_DATA="$DATA" sh "$SRC/system/bin/ledposter-sys" layout; fi
+  run rm -f "$DATA/state/maintenance-request"  # m8 put the request here; it is now $DATA/maintenance-request
   if [ ! -s "$DATA/setup-password" ]; then
     local pw
     pw="$(LC_ALL=C tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' < /dev/urandom | head -c 10 || true)"  # tr gets SIGPIPE: fine
     [ "${#pw}" = 10 ] || die "could not generate the setup password"
     write 600 "$DATA/setup-password" <<< "$pw"
   fi
+  run chown -h "$SVC_USER:$SVC_USER" "$DATA/setup-password"
   local keys="" tmp
   tmp="$(mktemp)"
   if [ -n "$SSH_KEY" ]; then printf '%s\n' "$SSH_KEY" > "$tmp"; keys="$tmp"; elif [ -s "$EXISTING_KEYS" ]; then cat "$EXISTING_KEYS" > "$tmp"; keys="$tmp"; fi
+  chmod 644 "$tmp"  # public keys; init-config runs as the service user
   local args=("$DATA/config.yaml" --ssh "$SSH_MODE")
   [ -n "$keys" ] && args+=(--keys "$keys")
   # Writes the config (a fresh one from config/config.example.yaml, or just the ssh section of
   # an existing one) and the files the units read: firewall.rules, ssh/mode, ssh/authorized_keys,
-  # maintenance.conf.
-  if [ "$DRY" = 1 ]; then note "+ (cd $REL/web && LEDPOSTER_DATA=$DATA .venv/bin/python -m ledposter.system init-config ${args[*]})"; else
-    (cd "$REL/web" && LEDPOSTER_DATA="$DATA" "$REL/web/.venv/bin/python" -m ledposter.system init-config "${args[@]}")
+  # maintenance.conf. As the service user, so they are its files and root chowns nothing.
+  if [ "$DRY" = 1 ]; then note "+ (cd $REL/web && LEDPOSTER_DATA=$DATA runuser -u $SVC_USER -- .venv/bin/python -m ledposter.system init-config ${args[*]})"; else
+    for f in config.yaml firewall.rules maintenance.conf; do  # an m8 install wrote these as root
+      [ -f "$DATA/$f" ] && [ ! -L "$DATA/$f" ] && chown -h "$SVC_USER:$SVC_USER" "$DATA/$f"
+    done
+    for f in mode authorized_keys; do [ -f "$DATA/ssh/$f" ] && [ ! -L "$DATA/ssh/$f" ] && chown -h "$SVC_USER:$SVC_USER" "$DATA/ssh/$f"; done
+    (cd "$REL/web" && LEDPOSTER_DATA="$DATA" runuser -u "$SVC_USER" -- "$REL/web/.venv/bin/python" -m ledposter.system init-config "${args[@]}")
   fi
   rm -f "$tmp"
-  run chown -R "$SVC_USER:$SVC_USER" "$DATA/media" "$DATA/logs" "$DATA/ssh" "$DATA/config.yaml" "$DATA/setup-password" \
-    "$DATA/firewall.rules" "$DATA/maintenance.conf"
-  run chown "$SVC_USER:$SVC_USER" "$DATA"
-  run chmod 750 "$DATA"
 }
 
 step_system_files() {
@@ -310,7 +365,7 @@ step_network() {
     run mkdir -p "$DATA/state/nm"
     run chmod 700 "$DATA/state/nm"
     if [ "$DRY" = 0 ] && [ -d "$nmdir" ]; then cp -a "$nmdir/." "$DATA/state/nm/"; fi
-    local line="$DATA/state/nm  $nmdir  none  bind,x-systemd.requires-mounts-for=$DATA  0  0"
+    local line="$DATA/state/nm  $nmdir  none  bind,nofail,x-systemd.requires-mounts-for=$DATA  0  0"
     note "fstab: $line"
     if [ "$DRY" = 0 ]; then echo "$line" >> /etc/fstab; fi
     run systemctl daemon-reload
@@ -396,7 +451,8 @@ summary() {
   Root filesystem: $([ "$NO_OVERLAY" = 1 ] && echo "writable (--no-overlay)" || echo "read-only overlay from the next boot")
 
   Software updates from the app need read access to the repo. Add this deploy key at
-  https://github.com/<owner>/<repo>/settings/keys (read-only is enough):
+  https://github.com/<owner>/<repo>/settings/keys (read-only is enough; it is the only
+  credential the wall holds, and a compromised web app could read it):
 
       $pub
 

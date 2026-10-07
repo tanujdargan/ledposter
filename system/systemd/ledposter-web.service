@@ -16,6 +16,8 @@ Type=simple
 User=ledposter
 Group=ledposter
 Environment=LEDPOSTER_DATA=/data PYTHONUNBUFFERED=1 HOME=/data/app
+# /data/app is root's: let `git describe` (Settings > Software) read it without "dubious ownership"
+Environment=GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=*
 WorkingDirectory=/data/app/current/web
 ExecStart=/data/app/current/web/.venv/bin/python -m ledposter
 Restart=always

@@ -4,7 +4,9 @@
 # in web/ledposter/net.py.
 #
 #   ledposter-net rollback   put the connection named in $LEDPOSTER_DATA/net-rollback back on
-#                            DHCP (the web app removes that file when the owner confirms)
+#                            DHCP (the web app removes that file when the owner confirms). Run
+#                            by ledposter-net-rollback.timer 120s after a static IP is applied,
+#                            and at boot while the note exists (a reboot inside the window).
 #   ledposter-net hosts      rewrite the 127.0.1.1 line of /etc/hosts with the current hostname
 set -eu
 
@@ -13,16 +15,22 @@ note="$data/net-rollback"
 
 case "${1:-}" in
   rollback)
-    if [ ! -f "$note" ]; then
+    # The note is the web app's file: read without following symlinks, refused unless it is a
+    # regular file the service user owns (ledposter-sys input), and used as data only.
+    con="$(LEDPOSTER_DATA="$data" ledposter-sys input net-rollback)" && rc=0 || rc=$?
+    if [ "$rc" = 2 ]; then
       echo "ledposter-net: no rollback pending ($note missing)"
       exit 0
     fi
-    con="$(head -n 1 "$note")"
     rm -f "$note"
+    [ "$rc" = 0 ] || { echo "ledposter-net: rollback note refused; nothing done" >&2; exit 1; }
+    con="$(printf '%s\n' "$con" | head -n 1)"
     if [ -z "$con" ]; then
       echo "ledposter-net: rollback note is empty" >&2
       exit 1
     fi
+    # A NetworkManager profile name: printable, no leading dash (it is the next nmcli argument).
+    case "$con" in -* | *[![:print:]]*) echo "ledposter-net: bad connection name in the rollback note" >&2; exit 1 ;; esac
     echo "ledposter-net: static IP on '$con' was not confirmed, back to DHCP"
     nmcli connection modify "$con" ipv4.method auto ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ipv4.ignore-auto-dns no
     dev="$(nmcli -t -f DEVICE,CONNECTION device status | awk -F: -v c="$con" '$2 == c { print $1; exit }')"
@@ -40,8 +48,9 @@ case "${1:-}" in
     fi
     # avahi-daemon follows hostnamed on its own; the restart only covers builds that do not
     systemctl try-restart avahi-daemon.service 2>/dev/null || true
-    # /etc/hostname is on the read-only overlay (M8): ledposter-sys boot restores it from here
-    mkdir -p "$data/state" && echo "$name" > "$data/state/hostname"
+    # /etc/hostname is on the read-only overlay (M8): ledposter-sys boot restores it from here.
+    # state/ is root's (docs/ARCHITECTURE.md), so nothing the app owns is followed here.
+    if [ -d "$data/state" ] && [ ! -L "$data/state" ]; then echo "$name" > "$data/state/hostname"; fi
     echo "ledposter-net: /etc/hosts now maps 127.0.1.1 to $name"
     ;;
   *)

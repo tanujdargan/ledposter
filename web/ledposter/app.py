@@ -236,7 +236,7 @@ class MatrixSettings(BaseModel):
 
 
 class PowerSettings(BaseModel):
-    ceiling_amps: float = Field(gt=0, le=100)
+    ceiling_amps: float = Field(gt=0, le=config.MAX_CEILING_AMPS, description="The supply's panel budget is 15A (docs/spec.md)")
     amps_full_white_per_panel: float = Field(gt=0, le=20)
 
 

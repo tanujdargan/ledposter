@@ -17,7 +17,20 @@ docs/      spec, this file, protocol.md, ui-references.md, DEVIATIONS.md
 
 ## Data and config
 
-- Writable data dir is `/data` (env `LEDPOSTER_DATA` overrides it for dev and tests). It holds `config.yaml`, `media/`, `logs/`, and from M8 the hotspot card password (`setup-password`), the session key (`secret`), the inputs of the root-side units (`firewall.rules`, `ssh/`, `maintenance.conf`, `factory-reset`), persisted system state (`state/`: hostname, Wi-Fi profiles bind-mounted into `/etc/NetworkManager/system-connections`, maintenance and overlay markers) and the installed software (`app/`: `releases/<tag>/` checkouts with their built engine and venv, `current` and `previous` symlinks, the update request/status/pending files, the deploy key). The root filesystem is a read-only overlay, so nothing outside `/data` survives a reboot (system/install.sh, docs/DEVIATIONS.md).
+- Writable data dir is `/data` (env `LEDPOSTER_DATA` overrides it for dev and tests). The root filesystem is a read-only overlay, so nothing outside `/data` survives a reboot (system/install.sh, docs/DEVIATIONS.md). Its layout and ownership are part of the threat model (the web app runs as `ledposter`; root-run units and the root-run engine read from here, so the `ledposter` user must not be able to swap anything root uses):
+
+  | path | owner, mode | written by | what |
+  |---|---|---|---|
+  | `/data` | `root:ledposter` 1775 | installer | sticky: the web app adds and replaces its own files here, but cannot rename or remove root's entries |
+  | `config.yaml`, `secret`, `setup-password` | `ledposter` 640/600/600 | web app (installer makes the password) | the config, the session key, the hotspot card password |
+  | `firewall.rules`, `ssh/mode`, `ssh/authorized_keys`, `maintenance.conf`, `maintenance-request`, `factory-reset`, `update-request.json`, `net-rollback` | `ledposter` | web app | the inputs of the root-side units: read by root without following symlinks (`ledposter-sys input`, `updater.read_input`: regular file owned by `ledposter`, under 64KB), every line matched against a strict pattern, used as data only |
+  | `media/` | `ledposter` 755 | web app (transcoder) | the media cache, read by the engine after it dropped root |
+  | `logs/` | `root` 755 | root units | `update.log`, `maintenance.log` |
+  | `logs/web/` | `ledposter` 755 | web app | `web.log` (rotated) |
+  | `state/` | `root` 755 | root units | `hostname`, `nm/` (Wi-Fi profiles, bind-mounted into `/etc/NetworkManager/system-connections`, 700), `overlay-wanted`, `maintenance-pending`, `fake-hwclock.data` |
+  | `app/` | `root` 755 | installer, `ledposter-update.service` (root) | `releases/<tag>/` checkouts with their built engine and venv, `current` and `previous` symlinks, `update.json` (progress, readable by the app), `pending.json`, `origin`, `known_hosts`, `deploy_key` (`root:ledposter` 640: read-only on GitHub, readable so the app can list tags), `build/` (home and pip cache of `ledposter-build`, 700) |
+
+  The web app reads and executes `app/current` and reads `app/update.json` and `state/maintenance-pending`; it writes nothing under `app/`, `state/` or `logs/`. Root creates the `ledposter`-owned directories itself (`mkdir` then `chown`, never on an existing path) and never `chown`s, `rm -rf`s through, or writes into a path the app owns, except the `rm -rf` of the app's top-level entries at a factory reset (coreutils `rm` does not follow symlinks).
 - `/data/config.yaml` is the single versioned YAML config (`version:` key). Only the web app writes it, atomically (tmp file, fsync, rename, fsync dir). The engine only reads it: at start, and again on the `reload_config` command.
 - Every hardware tunable (slowdown, PWM bits, chain mapping, limiter ceiling, GPIO pins, I2C bus/address, socket paths) lives in config, never in code.
 
@@ -45,7 +58,7 @@ docs/      spec, this file, protocol.md, ui-references.md, DEVIATIONS.md
 
 - **Engine:** matrix, frame loop, modes, playlist playback, limiter, BH1750, button, DDP/E1.31 receivers, overlays, on-wall text (IP, setup status).
 - **Web app:** auth, REST API (`/api/...`, OpenAPI at `/docs`), preview WebSocket relay, uploads and transcoding, config writes, schedule, MQTT/HA, networking (NetworkManager via `nmcli`), updates.
-- **Root-side units (M6/M8):** the web app runs as the `ledposter` user and never gets root. Anything that needs it (DHCP rollback, `/etc/hosts`, firewall, SSH mode, update/rollback, factory reset, restarts, reboot, the maintenance window) is a fixed systemd unit in `system/systemd/` that the user may start through polkit (`system/polkit/`) and that reads its inputs from a file under `/data` written by the app. No sudo, no transient units.
+- **Root-side units (M6/M8):** the web app runs as the `ledposter` user and never gets root. Anything that needs it (DHCP rollback, `/etc/hosts`, firewall, SSH mode, update/rollback, factory reset, restarts, reboot, the maintenance window) is a fixed systemd unit in `system/systemd/` that the user may start through polkit (`system/polkit/`) and that reads its inputs from a file under `/data` written by the app. No sudo, no transient units. The root side treats those files as hostile input (table above): no `source`/`eval`, no unquoted expansion, no `xargs` or `sh -c`, no symlink following; and nothing root executes (`/data/app`, the scripts in `/usr/local/bin`, the units) is writable by `ledposter`. Builds (make, venv, pip) run as a third user, `ledposter-build`, so root never runs code from PyPI either.
 
 ## Milestone hand-off rules
 

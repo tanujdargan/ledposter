@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
 """Software update with rollback (docs/spec.md "Reliability"). Stdlib only: ledposter-update.service
-runs it with the system python3 as the `ledposter` user, from /data/app/current.
+runs it with the system python3 as root, from /data/app/current.
 
     python3 updater.py run                      what the unit runs: finish a pending switch, or serve the request file
     python3 updater.py request update TAG       write the request (the web app does this through system.py)
     python3 updater.py request rollback
     python3 updater.py status | tags
 
-Layout under $LEDPOSTER_DATA/app (docs/ARCHITECTURE.md):
+Layout (docs/ARCHITECTURE.md). $LEDPOSTER_DATA/app is root-owned; the web app (user `ledposter`)
+can read and run the current release but not change it:
   releases/<tag>/     a git checkout of that tag with the built engine and its venv; `.ready` inside
                       marks a finished build (a dir without it is garbage and gets rebuilt)
   current, previous   symlinks to releases/<tag>; `current` is what the services run
-  update-request.json {"action": "update", "target": "m9"} or {"action": "rollback"}
   update.json         progress for the UI, rewritten at every step
   pending.json        {"new", "old", "previous", "action"} from just before a switch until the health
                       check passed, so a power cut mid-switch is finished (or rolled back) at boot
-  origin, deploy_key, token   how to reach the private repo (README: Software updates)
+  build/              home and pip cache of the `ledposter-build` user that compiles and pip-installs
+  origin, deploy_key, known_hosts, token   how to reach the private repo (README: Software updates)
+$LEDPOSTER_DATA/update-request.json is the one input the web app writes: {"action": "update",
+"target": "m9"} or {"action": "rollback"}. It is read with O_NOFOLLOW and must be a regular file
+owned by the service user; the target must match TAG_RE and be a tag the repository actually has.
+
+Who runs what: git clone runs as root (the repo is reached with the deploy key, the tag is
+checked against `git ls-remote` first); make, venv, pip and the tests run as the unprivileged
+`ledposter-build` user in the release dir, which root then chowns to itself and marks `.ready`.
+So root never executes anything the `ledposter` user could have written (docs/DEVIATIONS.md).
 
 Power-cut safety: every file above is written tmp + fsync + rename; symlinks are replaced by
 renaming a temp symlink; a half-built release is never `current`; `run` at boot resumes whatever
@@ -23,14 +32,21 @@ was in flight. Failure in fetch/build/test never touches `current`.
 """
 import json
 import os
+import pwd
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
 import urllib.request
 
 HEALTH_TIMEOUT_S = 90
+SERVICE_USER = "ledposter"
+BUILD_USER = "ledposter-build"
+TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+REQUEST_FILE = "update-request.json"
+MAX_INPUT_BYTES = 65536
 STEPS = {"update": ["fetching", "building", "testing", "switching", "restarting", "checking"],
          "rollback": ["switching", "restarting", "checking"]}
 RESUMABLE = ("fetching", "building", "testing")
@@ -77,6 +93,60 @@ def read_json(path):
         return None
 
 
+class InputError(Exception):
+    """A file the web app wrote is not what root may read (symlink, not a regular file, wrong owner, too big)."""
+
+
+def input_owners():
+    """Who may have written a request file: the service user, root, and whoever runs this (tests)."""
+    uids = {0, os.getuid()}
+    try:
+        uids.add(pwd.getpwnam(SERVICE_USER).pw_uid)
+    except KeyError:
+        pass
+    return uids
+
+
+def read_input(path, limit=MAX_INPUT_BYTES):
+    """Reads a file the unprivileged web app wrote, as root, without following anything it could
+    have planted: O_NOFOLLOW, then the open file must be a regular file owned by the service user
+    (or root), at most `limit` bytes. FileNotFoundError when it is absent, InputError when refused.
+    system/bin/ledposter-sys has the same check for its inputs."""
+    fd = None
+    try:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY)
+        except OSError as e:
+            if e.errno == 2:  # ENOENT
+                raise FileNotFoundError(path)
+            raise InputError(f"{path}: {e.strerror} (a symlink?)")
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise InputError(f"{path}: not a regular file")
+        if st.st_uid not in input_owners():
+            raise InputError(f"{path}: owned by uid {st.st_uid}, not the service user")
+        if st.st_size > limit:
+            raise InputError(f"{path}: {st.st_size} bytes is too big")
+        data = os.read(fd, limit + 1)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if len(data) > limit or b"\0" in data:
+        raise InputError(f"{path}: too big or not text")
+    return data.decode("utf-8", "replace")
+
+
+def chown_tree(path, user):
+    """chown -R without following symlinks; a no-op when not root (dev boxes, tests)."""
+    if os.geteuid() != 0:
+        return
+    pw = pwd.getpwnam(user)
+    os.lchown(path, pw.pw_uid, pw.pw_gid)
+    for root, dirs, files in os.walk(path):
+        for n in dirs + files:
+            os.lchown(os.path.join(root, n), pw.pw_uid, pw.pw_gid)
+
+
 def config_port(data_dir):
     """web.port from config.yaml without PyYAML (the file is written by yaml.safe_dump)."""
     try:
@@ -107,6 +177,8 @@ def git_env(app_dir):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", HOME=app_dir)
     key = os.path.join(app_dir, "deploy_key")
     if os.path.exists(key):
+        # known_hosts is seeded by install.sh (ssh-keyscan github.com) and root-owned; the web app's
+        # `git ls-remote` can read it but not add to it (ssh warns and carries on).
         env["GIT_SSH_COMMAND"] = (f"ssh -i {key} -o IdentitiesOnly=yes -o BatchMode=yes "
                                   f"-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={app_dir}/known_hosts")
     return env
@@ -152,7 +224,9 @@ class Updater:
         self.data = data_dir
         self.app = os.path.join(data_dir, "app")
         self.releases = os.path.join(self.app, "releases")
+        self.build_home = os.path.join(self.app, "build")
         self.log_path = os.path.join(data_dir, "logs", "update.log")
+        self.request_path = os.path.join(data_dir, REQUEST_FILE)
         self._run = run or self._run_subprocess
         self._health = health or self._health_http
         self.sleep, self.clock, self.out = sleep, clock, out or sys.stderr
@@ -176,20 +250,33 @@ class Updater:
         return st
 
     def request(self):
-        return read_json(self._p("update-request.json"))
+        """The web app's request, or None when there is none. InputError if the file is not one
+        root may read (the caller reports it and removes the file)."""
+        try:
+            text = read_input(self.request_path)
+        except FileNotFoundError:
+            return None
+        try:
+            req = json.loads(text)
+        except ValueError:
+            raise InputError(f"{self.request_path}: not JSON")
+        if not isinstance(req, dict):
+            raise InputError(f"{self.request_path}: not a JSON object")
+        return req
 
     def write_request(self, req):
-        write_atomic(self._p("update-request.json"), json.dumps(req))
+        write_atomic(self.request_path, json.dumps(req))
 
     def pending(self):
         return read_json(self._p("pending.json"))
 
     def _clear(self, name):
+        p = self.request_path if name == REQUEST_FILE else self._p(name)
         try:
-            os.unlink(self._p(name))
+            os.unlink(p)
         except OSError:
             pass
-        fsync_dir(self.app)
+        fsync_dir(os.path.dirname(p))
 
     def link(self, name):
         try:
@@ -220,21 +307,29 @@ class Updater:
 
     # -- commands --
 
-    def _run_subprocess(self, cmd, cwd=None, env=None, timeout=1800):
-        """Returns (rc, output). Output is appended to the log."""
+    def _run_subprocess(self, cmd, cwd=None, env=None, timeout=1800, user=None):
+        """Returns (rc, output). Output is appended to the log. `user` runs the command as that
+        account (supplementary groups dropped) when we are root; otherwise as ourselves."""
+        as_user = {}
+        if user and os.geteuid() == 0:
+            try:
+                pw = pwd.getpwnam(user)
+            except KeyError:
+                return 1, f"user {user} does not exist (run system/install.sh)"
+            as_user = {"user": pw.pw_uid, "group": pw.pw_gid, "extra_groups": []}
         try:
-            r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+            r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, **as_user)
             out = (r.stdout or "") + (r.stderr or "")
             rc = r.returncode
         except FileNotFoundError as e:
             rc, out = 127, str(e)
         except subprocess.TimeoutExpired:
             rc, out = 124, f"timed out after {timeout}s"
-        self.log(f"$ {' '.join(cmd)}\n{out.rstrip()}")
+        self.log(f"$ {'(' + user + ') ' if user else ''}{' '.join(cmd)}\n{out.rstrip()}")
         return rc, out
 
-    def cmd(self, cmd, cwd=None, env=None, what=None, timeout=1800):
-        rc, out = self._run(cmd, cwd=cwd, env=env, timeout=timeout)
+    def cmd(self, cmd, cwd=None, env=None, what=None, timeout=1800, user=None):
+        rc, out = self._run(cmd, cwd=cwd, env=env, timeout=timeout, **({"user": user} if user else {}))
         if rc != 0:
             tail = " | ".join(line.strip() for line in out.strip().splitlines()[-3:]) or f"exit {rc}"
             raise StepError(f"{what or cmd[0]} failed: {tail}")
@@ -268,7 +363,14 @@ class Updater:
 
     # -- steps --
 
+    def remote_tags(self):
+        """The repository's tags; the only names an update request may ask for."""
+        out = self.cmd(["git", "ls-remote", "--tags", "--refs", fetch_url(self.app)], env=git_env(self.app),
+                       what="git ls-remote", timeout=60)
+        return {line.split("refs/tags/", 1)[1].strip() for line in out.splitlines() if "refs/tags/" in line}
+
     def fetch(self, tag, rel):
+        """As root: the remote is ours (deploy key), the tag was checked against remote_tags()."""
         env = git_env(self.app)
         os.makedirs(self.releases, exist_ok=True)
         self.cmd(["git", "clone", "--quiet", "--depth", "1", "--branch", tag, fetch_url(self.app), rel],
@@ -279,18 +381,34 @@ class Updater:
         if rc != 0:  # the server did not allow a shallow fetch of the pinned commit
             self.cmd(["git", "-C", rel, "submodule", "update", "--init"], env=env, what="git submodule", timeout=900)
 
+    def build_env(self):
+        """HOME and the pip cache of the build user, under the root-owned app dir."""
+        if os.geteuid() == 0:
+            try:
+                pw = pwd.getpwnam(BUILD_USER)
+            except KeyError:
+                raise StepError(f"build user {BUILD_USER} does not exist (run system/install.sh)")
+            os.makedirs(self.build_home, mode=0o700, exist_ok=True)
+            os.chown(self.build_home, pw.pw_uid, pw.pw_gid)
+        return {"HOME": self.build_home, "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "PIP_CACHE_DIR": os.path.join(self.build_home, "pip-cache"), "LANG": "C.UTF-8"}
+
     def build(self, rel):
-        env = dict(os.environ, HOME=self.app, PIP_CACHE_DIR=os.path.join(self.app, "pip-cache"))
-        self.cmd(["make", "-C", os.path.join(rel, "engine"), "-j2"], env=env, what="engine build", timeout=3600)
+        """make, venv and pip as the build user: pip runs setup code from PyPI, make runs the
+        checkout's Makefiles; neither as root. The checkout is handed over first."""
+        env = self.build_env()
+        chown_tree(rel, BUILD_USER)
+        self.cmd(["make", "-C", os.path.join(rel, "engine"), "-j2"], env=env, what="engine build", timeout=3600, user=BUILD_USER)
         venv = os.path.join(rel, "web", ".venv")
-        self.cmd(["python3", "-m", "venv", "--system-site-packages", venv], env=env, what="venv")
+        self.cmd(["python3", "-m", "venv", "--system-site-packages", venv], env=env, what="venv", user=BUILD_USER)
         self.cmd([os.path.join(venv, "bin", "pip"), "install", "--quiet", "--retries", "5", "--timeout", "60",
-                  "-r", os.path.join(rel, "web", "requirements.txt")], env=env, what="pip install", timeout=1800)
+                  "-r", os.path.join(rel, "web", "requirements.txt")], env=env, what="pip install", timeout=1800, user=BUILD_USER)
 
     def test(self, rel):
-        self.cmd(["make", "-C", os.path.join(rel, "engine"), "test"], what="engine tests", timeout=1800)
+        env = self.build_env()
+        self.cmd(["make", "-C", os.path.join(rel, "engine"), "test"], env=env, what="engine tests", timeout=1800, user=BUILD_USER)
         self.cmd([os.path.join(rel, "web", ".venv", "bin", "python"), "-c", "import ledposter.app"],
-                 cwd=os.path.join(rel, "web"), what="web app import check")
+                 cwd=os.path.join(rel, "web"), env=env, what="web app import check", user=BUILD_USER)
 
     # -- actions --
 
@@ -300,14 +418,19 @@ class Updater:
         if pend:
             self.log(f"resuming: {pend['new']} switched but not yet checked")
             return self.finish(pend)
-        req = self.request()
+        try:
+            req = self.request()
+        except InputError as e:
+            self._clear(REQUEST_FILE)
+            self.set_status(state="failed", error="bad request", message=f"Refused the update request: {e}")
+            return "failed"
         if not req:
             return "idle"
         if req.get("action") == "rollback":
             return self.rollback()
-        if req.get("action") == "update" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", str(req.get("target") or "")):
+        if req.get("action") == "update" and isinstance(req.get("target"), str) and TAG_RE.match(req["target"]):
             return self.update(req["target"])
-        self._clear("update-request.json")
+        self._clear(REQUEST_FILE)
         self.set_status(state="failed", error="bad request", message=f"Bad update request: {req}")
         return "failed"
 
@@ -321,19 +444,22 @@ class Updater:
         try:
             if not self.ready(tag):
                 shutil.rmtree(rel, ignore_errors=True)
+                if tag not in self.remote_tags():
+                    raise StepError(f"{tag} is not a release tag on the repository")
                 self.fetch(tag, rel)
                 self.set_status(state="building", message="Building the engine and installing Python packages (minutes on a Pi 3B)")
                 self.build(rel)
                 self.set_status(state="testing", message="Running the engine tests and an import check")
                 self.test(rel)
+                chown_tree(rel, "root")  # from here on only root can change the release
                 write_atomic(os.path.join(rel, ".ready"), f"{int(self.clock())}\n")
             elif tag == self.link("current"):
-                self._clear("update-request.json")
+                self._clear(REQUEST_FILE)
                 self.set_status(state="done", message=f"Already running {tag}")
                 return "done"
         except StepError as e:
             shutil.rmtree(rel, ignore_errors=True)
-            self._clear("update-request.json")
+            self._clear(REQUEST_FILE)
             self.set_status(state="failed", error=str(e), message=f"Update to {tag} failed; still running {self.link('current')}")
             return "failed"
         return self.switch_to(tag, "update")
@@ -341,7 +467,7 @@ class Updater:
     def rollback(self):
         prev = self.link("previous")
         if not self.ready(prev):
-            self._clear("update-request.json")
+            self._clear(REQUEST_FILE)
             self.set_status(state="failed", action="rollback", error="no previous release",
                             message="No previous release to roll back to")
             return "failed"
@@ -370,7 +496,7 @@ class Updater:
             if old and old != new:
                 self.set_link("previous", old)  # for an update: where to roll back to; for a rollback: the way forward
             self._clear("pending.json")
-            self._clear("update-request.json")
+            self._clear(REQUEST_FILE)
             self.set_status(state="done", error=None, message=f"Running {new}")
             self.prune()
             return "done"
@@ -385,13 +511,13 @@ class Updater:
             except StepError as e:
                 self.log(str(e))
             back, _ = self.wait_healthy(old)
-            self._clear("update-request.json")
+            self._clear(REQUEST_FILE)
             self.set_status(state="rolled_back", error=why, target=new,
                             message=f"{new} failed its health check ({why}); back on {old}"
                                     + ("" if back else ", which is not answering either"))
             return "rolled_back"
         self._clear("pending.json")
-        self._clear("update-request.json")
+        self._clear(REQUEST_FILE)
         self.set_status(state="failed", error=why, message=f"{new} is not healthy ({why}) and there is nothing to roll back to")
         return "failed"
 

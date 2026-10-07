@@ -5,10 +5,17 @@ rename, fsync dir, mode 640 (the file holds the admin password hash and token ha
 the group is the `ledposter` group the engine drops to, so reload_config can read it).
 """
 import copy
+import logging
 import os
 import tempfile
 
 import yaml
+
+log = logging.getLogger("ledposter.config")
+# docs/spec.md: 100W PD supply, about 15A at 5V for the panels. A ceiling above it would let the
+# limiter pass frames the supply cannot deliver; the API refuses it and load() clamps it (the
+# engine clamps and logs it too).
+MAX_CEILING_AMPS = 15.0
 
 DEFAULTS = {
     "version": 1,
@@ -76,6 +83,16 @@ def load(p=None):
         else:
             cfg.setdefault(key, default)
     cfg["version"] = cfg.get("version") or DEFAULTS["version"]
+    try:
+        ceiling = float(cfg["power"].get("ceiling_amps"))
+    except (TypeError, ValueError):
+        ceiling = DEFAULTS["power"]["ceiling_amps"]
+    if not ceiling > 0:
+        ceiling = DEFAULTS["power"]["ceiling_amps"]
+    if ceiling > MAX_CEILING_AMPS:
+        log.warning("power.ceiling_amps %s is above the %sA supply budget; using %sA", ceiling, MAX_CEILING_AMPS, MAX_CEILING_AMPS)
+        ceiling = MAX_CEILING_AMPS
+    cfg["power"]["ceiling_amps"] = ceiling
     return cfg
 
 

@@ -1,7 +1,9 @@
 # Factory reset, started by the web app after it wrote /data/factory-reset (the UI asks for
 # the hostname to be typed first). Erases config, media, tokens, logs, SSH keys and Wi-Fi
 # profiles, keeps the setup card password and the installed releases, writes a fresh
-# config and reboots into the setup hotspot. Installed by system/install.sh.
+# config and reboots into the setup hotspot. The request file is only a trigger (its content
+# is not read); root recreates the service user's directories itself. Installed by
+# system/install.sh.
 [Unit]
 Description=LED wall factory reset
 RequiresMountsFor=/data

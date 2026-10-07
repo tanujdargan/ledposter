@@ -113,11 +113,18 @@ class FakeWorld:
     def __init__(self, data):
         self.data, self.app = data, os.path.join(data, "app")
         self.calls, self.fail, self.healthy = [], set(), {}
+        self.users = {}  # command name -> the user it was run as (None: root/ourselves)
+        self.tags = ["m7", "m8", "m9", "m10"]  # what the repository has
         self.t = [1_000_000.0]
 
-    def run(self, cmd, cwd=None, env=None, timeout=None):
+    def run(self, cmd, cwd=None, env=None, timeout=None, user=None):
         self.calls.append(cmd)
         what = cmd[0]
+        self.users[os.path.basename(what) if what != "git" else " ".join(cmd[:2])] = user
+        if what == "git" and cmd[1] == "ls-remote":
+            if "ls-remote" in self.fail:
+                return 128, "fatal: Could not read from remote repository."
+            return 0, "".join(f"{i:040x}\trefs/tags/{t}\n" for i, t in enumerate(self.tags))
         if what == "git" and cmd[1] == "clone":
             if "clone" in self.fail:
                 return 128, "fatal: Could not read from remote repository."
@@ -190,11 +197,17 @@ def test_update_success_switches_and_prunes(tmp_path):
     assert st["state"] == "done" and st["target"] == "m9" and st["from_release"] == "m8" and st["error"] is None
     assert u.link("current") == "m9" and u.link("previous") == "m8"
     assert os.path.exists(tmp_path / "app" / "releases" / "m9" / ".ready")
-    assert not os.path.exists(tmp_path / "app" / "pending.json") and not os.path.exists(tmp_path / "app" / "update-request.json")
+    assert not os.path.exists(tmp_path / "app" / "pending.json") and not os.path.exists(tmp_path / "update-request.json")
     assert sorted(os.listdir(tmp_path / "app" / "releases")) == ["m8", "m9"]  # m7 pruned
     assert [c for c in w.calls if c[0] == "systemctl"] == [["systemctl", "restart", "ledposter-engine.service", "ledposter-web.service"]]
     assert ["git", "clone", "--quiet", "--depth", "1", "--branch", "m9", "git@github.com:tanujdargan/ledposter.git",
             str(tmp_path / "app" / "releases" / "m9")] in w.calls
+    assert w.calls.index(["git", "ls-remote", "--tags", "--refs", "git@github.com:tanujdargan/ledposter.git"]) < \
+        w.calls.index(["git", "clone", "--quiet", "--depth", "1", "--branch", "m9", "git@github.com:tanujdargan/ledposter.git",
+                       str(tmp_path / "app" / "releases" / "m9")])  # the tag was checked before anything was fetched
+    # git runs as root (deploy key); make, venv, pip and the tests as the build user, never as root
+    assert w.users["git ls-remote"] is None and w.users["git clone"] is None
+    assert w.users["make"] == w.users["python3"] == w.users["pip"] == w.users["python"] == updater.BUILD_USER
     assert u.run_once() == "idle"  # nothing left to do
     # the same tag again: already built, already current
     u.write_request({"action": "update", "target": "m9"})
@@ -227,7 +240,7 @@ def test_failed_build_never_switches(tmp_path, step):
     assert u.link("current") == "m8" and u.link("previous") == "m7"
     assert not os.path.exists(tmp_path / "app" / "releases" / "m9")  # half-built dir removed
     assert not any(c[0] == "systemctl" for c in w.calls)
-    assert not os.path.exists(tmp_path / "app" / "update-request.json")
+    assert not os.path.exists(tmp_path / "update-request.json")
 
 
 def test_rollback_and_forward_again(tmp_path):
@@ -304,8 +317,22 @@ def test_terminal_states_do_nothing_at_boot(tmp_path, state):
 
 def test_bad_request_and_atomic_files(tmp_path):
     u, w = make_updater(tmp_path)
-    u.write_request({"action": "update", "target": "../etc"})
-    assert u.run_once() == "failed" and u.status()["error"] == "bad request" and not w.calls
+    for target in ("../etc", "m9; rm -rf /", "-C", "", None, 7, "a" * 65):
+        u.write_request({"action": "update", "target": target})
+        assert u.run_once() == "failed" and u.status()["error"] == "bad request" and not w.calls, target
+        assert not os.path.exists(tmp_path / "update-request.json")
+    for text in ("[1, 2]", "not json", ""):
+        updater.write_atomic(str(tmp_path / "update-request.json"), text)
+        assert u.run_once() == "failed" and u.status()["error"] == "bad request" and not w.calls, text
+    # a well-formed tag the repository does not have: refused before anything is cloned
+    u.write_request({"action": "update", "target": "m99"})
+    assert u.run_once() == "failed" and "not a release tag" in u.status()["error"]
+    assert [c[:2] for c in w.calls] == [["git", "ls-remote"]] and not os.path.exists(tmp_path / "app" / "releases" / "m99")
+    w.calls.clear()
+    w.fail.add("ls-remote")
+    u.write_request({"action": "update", "target": "m9"})
+    assert u.run_once() == "failed" and "git ls-remote failed" in u.status()["error"]
+    assert u.link("current") == "m8"
     p = tmp_path / "app" / "update.json"
     assert stat.S_IMODE(p.stat().st_mode) == 0o644
     assert [f for f in os.listdir(tmp_path / "app") if f.endswith(".tmp")] == []
@@ -316,6 +343,58 @@ def test_bad_request_and_atomic_files(tmp_path):
     assert updater.config_port(str(tmp_path)) == 80
     (tmp_path / "config.yaml").write_text("version: 1\nweb:\n  admin_password: x\n  port: 8080\n  tokens: []\n")
     assert updater.config_port(str(tmp_path)) == 8080
+
+
+def test_request_file_must_be_a_plain_file_of_the_service_user(tmp_path):
+    """Root reads the request the unprivileged web app wrote: no symlinks, no FIFOs, no
+    directories, nothing owned by someone else, nothing huge."""
+    u, w = make_updater(tmp_path)
+    req = tmp_path / "update-request.json"
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps({"action": "rollback"}))
+    req.symlink_to(target)
+    assert u.run_once() == "failed" and "Refused" in u.status()["message"] and "symlink" in u.status()["message"]
+    assert not req.exists() and not os.path.lexists(req) and target.exists()  # the link went, its target did not
+    assert u.link("current") == "m8" and not w.calls
+    with pytest.raises(updater.InputError, match="symlink"):
+        req.symlink_to("/etc/passwd")
+        updater.read_input(str(req))
+    req.unlink()
+    os.mkfifo(req)
+    with pytest.raises(updater.InputError, match="not a regular file"):
+        updater.read_input(str(req))
+    assert u.run_once() == "failed" and not w.calls
+    req.mkdir()
+    with pytest.raises(updater.InputError, match="not a regular file"):
+        updater.read_input(str(req))
+    req.rmdir()
+    req.write_bytes(b"x" * (updater.MAX_INPUT_BYTES + 1))
+    with pytest.raises(updater.InputError, match="too big"):
+        updater.read_input(str(req))
+    req.write_bytes(b'{"action": "rollback"}\0')
+    with pytest.raises(updater.InputError, match="not text"):
+        updater.read_input(str(req))
+    req.unlink()
+    with pytest.raises(FileNotFoundError):
+        updater.read_input(str(req))
+    assert u.run_once() == "idle"
+    # someone else's file (a uid that is not root, not us, not the service user)
+    u.write_request({"action": "rollback"})
+    other = next(uid for uid in range(60000, 60100) if uid not in updater.input_owners())
+    real = os.fstat
+
+    def fake_fstat(fd):
+        st = real(fd)
+        return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, other, st.st_gid, st.st_size,
+                               st.st_atime, st.st_mtime, st.st_ctime))
+    os.fstat = fake_fstat
+    try:
+        with pytest.raises(updater.InputError, match="owned by uid"):
+            updater.read_input(str(req))
+    finally:
+        os.fstat = real
+    assert updater.TAG_RE.match("m9") and updater.TAG_RE.match("v1.0.0-rc1") and not updater.TAG_RE.match(".hidden")
+    assert not updater.TAG_RE.match("a/b") and not updater.TAG_RE.match("m9 x") and not updater.TAG_RE.match("$(id)")
 
 
 def test_fetch_url_prefers_deploy_key_over_token(tmp_path):
@@ -419,14 +498,16 @@ def test_ssh_and_maintenance_settings_write_unit_inputs(authed, data):
     assert r.status_code == 200 and (data / "maintenance.conf").read_text() == "ENABLED=0\nDAY=0\nHOUR=3\n"
     assert authed.put("/api/system/maintenance", json={"enabled": True, "day": 7, "hour": 3}).status_code == 422
     assert authed.post("/api/system/maintenance/run").status_code == 200
-    assert (data / "state" / "maintenance-request").exists() and fake.units[-1] == ("start", "ledposter-maintenance.service")
+    assert (data / "maintenance-request").exists() and fake.units[-1] == ("start", "ledposter-maintenance.service")
+    assert not (data / "state").exists()  # state/ is root's; the app writes nothing there
 
 
 def test_update_rollback_restart_and_factory_reset_requests(authed, data, engine):
     fake = authed.fakenet
     r = authed.post("/api/system/update", json={"target": "m9"})
     assert r.status_code == 202 and r.json()["state"] == "fetching" and r.json()["target"] == "m9"
-    assert json.load(open(data / "app" / "update-request.json")) == {"action": "update", "target": "m9"}
+    assert json.load(open(data / "update-request.json")) == {"action": "update", "target": "m9"}
+    assert not (data / "app" / "update-request.json").exists()  # app/ is root's
     assert fake.units[-1] == ("start", "ledposter-update.service")
     assert authed.post("/api/system/update", json={"target": "../x"}).status_code == 422
     assert authed.post("/api/system/rollback").status_code == 409  # nothing to roll back to
@@ -486,3 +567,20 @@ def test_config_defaults_have_the_m8_sections():
     cfg = config.load("/nonexistent/config.yaml")
     assert cfg["ssh"] == {"mode": "disabled", "authorized_keys": ""} and cfg["last_mode"] == {}
     assert cfg["maintenance"] == {"enabled": True, "day": 6, "hour": 4}
+
+
+def test_limiter_ceiling_is_capped_at_the_supply_budget(authed, data, tmp_path):
+    """docs/spec.md: about 15A for the panels. The API refuses more, config.load clamps a hand-edited
+    file (and the engine clamps and logs it too, engine/src/main.cpp)."""
+    assert config.MAX_CEILING_AMPS == 15.0
+    s = authed.get("/api/settings").json()
+    s["power"]["ceiling_amps"] = 15
+    assert authed.put("/api/settings", json=s).status_code == 200
+    for bad in (15.5, 16, 100, 0, -1):
+        s["power"]["ceiling_amps"] = bad
+        assert authed.put("/api/settings", json=s).status_code == 422, bad
+    assert yaml.safe_load((data / "config.yaml").read_text())["power"]["ceiling_amps"] == 15
+    p = tmp_path / "c.yaml"
+    for raw, want in (("40", 15.0), ("13", 13.0), ("0", 13.0), ("-2", 13.0), ("abc", 13.0)):
+        p.write_text(f"version: 1\npower: {{ceiling_amps: {raw}, amps_full_white_per_panel: 6}}\n")
+        assert config.load(str(p))["power"]["ceiling_amps"] == want, raw

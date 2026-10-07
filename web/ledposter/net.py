@@ -6,7 +6,9 @@ Static IP rollback: before a static address is applied, the connection name is w
 $LEDPOSTER_DATA/net-rollback and the systemd timer `ledposter-net-rollback.timer`
 (system/systemd, 120s) is restarted. The timer runs `system/bin/ledposter-net rollback` as
 root, which puts that connection back on DHCP unless the file was removed by a confirm.
-Nothing about it depends on this process staying alive.
+The same service runs at boot while the note exists (the timer does not survive a reboot),
+so a reboot inside the window reverts too. Nothing about it depends on this process staying
+alive, and the root side reads the note as data (no symlinks, a plain file of this user's).
 """
 import ipaddress
 import logging

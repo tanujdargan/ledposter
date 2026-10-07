@@ -1,9 +1,10 @@
 # Security updates on a read-only root (docs/DEVIATIONS.md): the hourly timer runs this; it
-# reads /data/maintenance.conf (ENABLED, DAY, HOUR from Settings) and, in the window, marks
-# /data/state/maintenance-pending, turns the overlay off and reboots. The boot-time
-# ledposter-maintenance-resume.service then runs unattended-upgrade on the writable root,
-# turns the overlay back on and reboots. "Run now" from Settings writes
-# /data/state/maintenance-request and starts this unit. Installed by system/install.sh.
+# reads /data/maintenance.conf (ENABLED, DAY, HOUR from Settings; parsed line by line, never
+# sourced) and, in the window, marks /data/state/maintenance-pending, turns the overlay off
+# and reboots. The boot-time ledposter-maintenance-resume.service then runs
+# unattended-upgrade on the writable root, turns the overlay back on and reboots. "Run now"
+# from Settings writes /data/maintenance-request and starts this unit. Installed by
+# system/install.sh.
 [Unit]
 Description=LED wall maintenance window (unattended-upgrades)
 RequiresMountsFor=/data

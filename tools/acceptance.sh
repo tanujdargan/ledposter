@@ -181,7 +181,15 @@ check_health() {
   for u in ledposter-engine.service ledposter-web.service; do systemctl is-active --quiet "$u" || { ok=0; why="$why $u not active;"; }; done
   grep -Eq 'overlayroot=tmpfs|boot=overlay' /proc/cmdline || { ok=0; why="$why overlay not active;"; }
   findmnt -no OPTIONS "$DATA" 2> /dev/null | grep -q noatime || { ok=0; why="$why $DATA not mounted noatime;"; }
+  grep -qE "^[^#].* $DATA .*nofail" /etc/fstab 2> /dev/null || { ok=0; why="$why $DATA lacks nofail in fstab;"; }
   [ -f "$(readlink -f "$DATA/app/current")/.ready" ] || { ok=0; why="$why current release has no .ready;"; }
+  # the ownership split that keeps the web app out of root (docs/ARCHITECTURE.md)
+  [ "$(stat -c '%U:%G %a' "$DATA")" = "root:ledposter 1775" ] || { ok=0; why="$why $DATA is not root:ledposter 1775;"; }
+  for d in app state logs; do
+    [ "$(stat -c %U "$DATA/$d")" = root ] || { ok=0; why="$why $DATA/$d not owned by root;"; }
+    if runuser -u ledposter -- test -w "$DATA/$d" 2> /dev/null; then ok=0; why="$why $DATA/$d writable by ledposter;"; fi
+  done
+  runuser -u ledposter -- test -x "$DATA/app/current/engine/ledengine" || { ok=0; why="$why ledposter cannot run the current release;"; }
   "$PY" -c "import yaml,sys; yaml.safe_load(open('$DATA/config.yaml'))" 2> /dev/null || { ok=0; why="$why config.yaml does not parse;"; }
   if find "$DATA" -name '*.tmp' -o -name '*.part' 2> /dev/null | grep -q .; then ok=0; why="$why temp files left under $DATA;"; fi
   local bad
@@ -203,7 +211,7 @@ print(bad)
 EOF
 )"
   [ "$bad" = 0 ] || { ok=0; why="$why $bad ready media items with an inconsistent cache;"; }
-  if [ "$ok" = 1 ]; then result health PASS "services active, overlay on, $DATA clean and consistent"; else result health FAIL "$why"; fi
+  if [ "$ok" = 1 ]; then result health PASS "services active, overlay on, $DATA clean, consistent and owned as designed"; else result health FAIL "$why"; fi
 }
 
 what="${1:-all}"

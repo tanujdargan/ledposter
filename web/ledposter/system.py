@@ -1,9 +1,13 @@
 """Milestone 8: what the web app asks the OS for. Root-needing actions (firewall, SSH, update,
 factory reset, service restarts, reboot) go through fixed systemd units the `ledposter` user may
 start via polkit (system/polkit/50-ledposter-system.rules); each unit reads its inputs from a
-file under $LEDPOSTER_DATA written here, so the app never needs root or sudo (M6 pattern,
-docs/DEVIATIONS.md). The pure parts (rule generation, key parsing, tag ordering, the factory
-reset plan, last-mode restore) are plain functions so they are unit tested without a Pi.
+file at the top of $LEDPOSTER_DATA written here (firewall.rules, ssh/, maintenance.conf,
+maintenance-request, factory-reset, update-request.json, net-rollback), so the app never needs
+root or sudo (M6 pattern, docs/DEVIATIONS.md). The root side (system/bin/ledposter-sys,
+updater.py) treats every one of them as untrusted data: read without following symlinks,
+matched line by line against a strict pattern, never sourced or passed to a shell. The pure
+parts (rule generation, key parsing, tag ordering, the factory reset plan, last-mode restore)
+are plain functions so they are unit tested without a Pi.
 
     python -m ledposter.system init-config PATH [--ssh disabled|key-only] [--keys FILE]
         used by install.sh and the factory reset: write a fresh config.yaml for the Pi
@@ -33,7 +37,9 @@ RULE_RE = re.compile(r"^(default (deny|allow) (incoming|outgoing)|logging off|al
 KEY_RE = re.compile(r"^(sk-)?(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521))(@openssh\.com)?"
                     r" AAAA[A-Za-z0-9+/]+={0,3}( [^\s].*)?$")  # every key blob starts with its type: AAAA
 KEEP_ON_RESET = {"app", "setup-password", "state", "lost+found"}
-TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+TAG_RE = updater.TAG_RE
+# Mirrors the parser in ledposter-sys maintenance: three integer lines, nothing else.
+MAINT_RE = re.compile(r"^(ENABLED|DAY|HOUR)=[0-9]+$")
 
 
 # -- firewall (pure) -------------------------------------------------------------------
@@ -108,8 +114,11 @@ def factory_reset_plan(data_dir):
 
 
 def maintenance_conf(m):
-    """What ledposter-maintenance.timer's hourly check reads (sourced by sh)."""
-    return f"ENABLED={1 if m.get('enabled', True) else 0}\nDAY={int(m.get('day', 6))}\nHOUR={int(m.get('hour', 4))}\n"
+    """What ledposter-maintenance.timer's hourly check reads. ledposter-sys parses it line by
+    line (`^(ENABLED|DAY|HOUR)=[0-9]+$`, range-checked); it is never sourced."""
+    text = f"ENABLED={1 if m.get('enabled', True) else 0}\nDAY={int(m.get('day', 6))}\nHOUR={int(m.get('hour', 4))}\n"
+    assert all(MAINT_RE.match(line) for line in text.splitlines()), text
+    return text
 
 
 # -- last mode restore -----------------------------------------------------------------
@@ -246,7 +255,9 @@ class System:
         self.start("factory_reset")
 
     def request_maintenance(self):
-        updater.write_atomic(os.path.join(self.data, "state", "maintenance-request"), f"{int(time.time())}\n")
+        """`ledposter-sys maintenance timer` begins the window when this file exists (state/ is
+        root-owned, so the request lives next to the other unit inputs at the top of the data dir)."""
+        updater.write_atomic(os.path.join(self.data, "maintenance-request"), f"{int(time.time())}\n")
         self.start("maintenance")
 
     def maintenance_pending(self):

@@ -3,7 +3,8 @@
 # the web app restores the last mode, and is restarted forever if it dies. Runs as root only
 # until the matrix library has set up the GPIO, then drops to engine.user/group from the
 # config (ledposter). The sockets live in /run/ledposter, group ledposter, so the web app
-# (user ledposter) can connect. Installed by system/install.sh.
+# (user ledposter) can connect. /data/app, where the binary lives, is root-owned (the web app
+# can read and run it, not change it). Installed by system/install.sh.
 [Unit]
 Description=LED wall display engine
 DefaultDependencies=no
