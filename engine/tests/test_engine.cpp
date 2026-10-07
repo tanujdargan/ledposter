@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <set>
 
+#include "bh1750.h"
+#include "ipc.h"
 #include "media.h"
 #include "patterns.h"
 
@@ -76,6 +78,92 @@ static void test_media() {
   assert(m.render(f, 1300) == 1400 && f.rgb[0] == 1);  // back to item 0
 }
 
+static bool near(double a, double b) { return std::fabs(a - b) < 1e-6; }
+
+static void test_brightness() {
+  // Lux -> auto brightness: clamped at both ends, log-interpolated between.
+  const AutoCurve c{2, 10, 400, 100};
+  assert(auto_pct(c, 0) == 10 && auto_pct(c, 2) == 10 && auto_pct(c, 1) == 10);
+  assert(auto_pct(c, 400) == 100 && auto_pct(c, 1e5) == 100);
+  assert(near(auto_pct(c, std::sqrt(2.0 * 400)), 55));  // geometric midpoint -> halfway
+  assert(auto_pct(c, 20) < auto_pct(c, 40) && auto_pct(c, 40) < auto_pct(c, 200));
+  assert(std::isnan(auto_pct(c, NAN)));
+  assert(near(bh1750_lux(0x01, 0x2c), 250));  // 300 counts
+
+  // Smoothing: no jump, converges, tau 0 or no history = straight to target.
+  assert(smooth(NAN, 7, 0.5, 3) == 7 && smooth(1, 7, 0.5, 0) == 7);
+  assert(near(smooth(0, 1, 3, 3), 1 - std::exp(-1.0)));  // one time constant: 63%
+  double v = 0;
+  for (int i = 0; i < 20; i++) {
+    const double nv = smooth(v, 100, 0.5, 3);
+    assert(nv > v && nv < 100 && nv - v < 16);
+    v = nv;
+  }
+  assert(v > 95);
+
+  // effective = min(user, auto); no auto reading -> user.
+  assert(effective_pct(80, NAN) == 80 && effective_pct(80, 30.4) == 30);
+  assert(effective_pct(20, 90) == 20);
+
+  // Ceiling holds for full white on 6 panels at every user/auto combination,
+  // measured on the frame as the panels show it.
+  Frame white(128, 192), out(128, 192);
+  white.fill(255, 255, 255);
+  for (int user = 0; user <= 100; user += 5)
+    for (double au : {double(NAN), 0.0, 10.0, 35.5, 36.0, 37.0, 50.0, 99.6, 100.0})
+      for (double ceiling : {13.0, 5.0, 0.3}) {
+        const int want = effective_pct(user, au);
+        const Power p = limit_power(white, 64, 6.0, want, ceiling);
+        scale_frame(white, p.pct, out);
+        assert(p.pct <= want && p.amps <= ceiling);
+        assert(estimate_amps(out, 64, 6.0, 100) <= ceiling);
+        assert(p.limited() == (want * 0.36 > ceiling));
+        if (p.limited()) assert(p.pct == int(ceiling / 36.0 * 100));  // as bright as allowed
+        else assert(p.pct == want && near(p.amps, want * 0.36));
+      }
+  Power p = limit_power(white, 64, 6.0, 100, 13.0);
+  assert(p.pct == 36 && near(p.amps_unlimited, 36) && near(p.amps, 12.96));
+  scale_frame(white, 36, out);
+  assert(out.rgb[0] == 91);  // 255 * 36 / 100, what SetBrightness(36) puts on the panel
+  assert(limit_power(white, 64, 6.0, 0, 13.0).amps == 0);  // power off / brightness 0
+}
+
+static void test_ipc() {
+  std::string buf = "{\"id\":1}\n\n{\"id\":2}\r\n{\"id";
+  auto lines = take_lines(buf);
+  assert(lines.size() == 2 && lines[1] == "{\"id\":2}" && buf == "{\"id");
+
+  assert(request_cmd(json{{"id", 1}, {"cmd", "status"}}) == "status");
+  assert(throws([] { request_cmd(json::array()); }));
+  assert(throws([] { request_cmd(json{{"id", 1}}); }));
+  assert(throws([] { request_cmd(json{{"cmd", 3}}); }));
+
+  assert(arg_pct(json{{"value", 50}}, "value") == 50 && arg_pct(json{{"value", 49.6}}, "value") == 50);
+  for (json bad : {json(101), json(-1), json("50"), json(nullptr)})
+    assert(throws([&] { arg_pct(json{{"value", bad}}, "value"); }));
+  assert(throws([] { arg_pct(json::object(), "value"); }));
+  assert(arg_bool(json{{"on", false}}, "on") == false);
+  assert(throws([] { arg_bool(json{{"on", 1}}, "on"); }));
+  assert(throws([] { arg_str(json{{"media", ""}}, "media"); }));
+
+  assert(parse_color("ff8000") == 0xff8000 && parse_color("#00FF7f") == 0x00ff7f);
+  assert(parse_color(0x123456) == 0x123456);
+  for (json bad : {json("fff"), json("gg0000"), json(0x1000000), json(-1), json(true)})
+    assert(throws([&] { parse_color(bad); }));
+
+  // Mailbox: jobs run in order, failures become ok:false replies with the id.
+  Mailbox mb;
+  int pokes = 0;
+  mb.on_reply = [&] { pokes++; };
+  mb.push({7, 1, [] { return json{{"x", 1}}; }});
+  mb.push({7, "a", []() -> json { throw std::runtime_error("nope"); }});
+  mb.run();
+  assert(pokes == 1 && mb.replies.size() == 2);
+  auto r0 = json::parse(mb.replies[0].second), r1 = json::parse(mb.replies[1].second);
+  assert(r0["ok"] == true && r0["id"] == 1 && r0["x"] == 1);
+  assert(r1["ok"] == false && r1["id"] == "a" && r1["error"] == "nope");
+}
+
 int main(int argc, char **argv) {
   // Spec snake: chain index 0 is top-left and sits at the right end of the strip.
   Layout L(64, kSnake);
@@ -138,6 +226,8 @@ int main(int argc, char **argv) {
   assert(gamma_lut(1.0)[77] == 77);
 
   test_media();
+  test_brightness();
+  test_ipc();
 
   if (argc > 1) {
     draw_pattern("panel-id", f, L, 0, 0);

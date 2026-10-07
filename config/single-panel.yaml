@@ -6,7 +6,6 @@ matrix:
   panel_size: 64
   gpio_slowdown: 2                    # raise if you see flicker/garbage, lower for refresh rate
   pwm_bits: 9
-  brightness: 100                     # percent, hardware PWM
   show_refresh_rate: false            # true prints refresh Hz to the terminal
   # Chain order: the first entry is the panel plugged into the bonnet.
   # col/row place it on the portrait grid (0,0 = top-left).
@@ -17,6 +16,25 @@ matrix:
 power:
   ceiling_amps: 13.0               # frames are scaled down to never exceed this
   amps_full_white_per_panel: 6.0   # calibration: measure one panel at full white and set this
+
+# effective brightness = min(user, auto), then the power limiter on top.
+brightness:
+  user: 100   # percent, the brightness slider
+  auto: true  # follow the BH1750; with no sensor this falls back to user
+  # Auto curve: lux_low and darker gives min_pct, lux_high and brighter max_pct,
+  # log-interpolated in between. smoothing_s: time constant, so it fades instead of jumping.
+  auto_curve: {lux_low: 2, min_pct: 10, lux_high: 400, max_pct: 100, smoothing_s: 3}
+
+sensors:
+  bh1750:
+    i2c_bus: 1      # /dev/i2c-1 (GPIO2 SDA, GPIO3 SCL)
+    address: 0x23   # ADDR pin low; 0x5c if ADDR is high
+    poll_ms: 500
+
+engine:
+  socket: /run/ledposter/engine.sock          # control: newline-delimited JSON (docs/protocol.md)
+  preview_socket: /run/ledposter/frames.sock  # output frames for the live preview
+  preview_fps: 15                             # max preview messages per second per client
 
 display:
   gamma: 2.2   # engine LUT for patterns (later effects/text); the transcoder bakes the same curve into media

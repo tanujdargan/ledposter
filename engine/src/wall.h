@@ -1,6 +1,7 @@
 // Pure wall geometry, power math and the mode interface: no hardware
 // dependency, so it is unit tested on any machine (see tests/test_engine.cpp).
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -89,6 +90,41 @@ inline double estimate_amps(const Frame &f, int panel_size, double amps_full_whi
 // Factor (<= 1) to scale a frame's pixel values by so it stays under the ceiling.
 inline double limiter_scale(double amps, double ceiling_amps) {
   return amps > ceiling_amps ? ceiling_amps / amps : 1.0;
+}
+
+// The brightness chain (docs/ARCHITECTURE.md): effective = min(user, auto),
+// then the limiter. auto_pct is NaN when auto is off or the sensor has no
+// reading; the user setting then applies on its own.
+inline int effective_pct(int user, double auto_pct) {
+  return std::isnan(auto_pct) ? user : std::min(user, int(std::lround(auto_pct)));
+}
+
+// How one frame goes out. The output brightness is a whole percent because
+// that is what the matrix takes (FrameCanvas::SetBrightness; with luminance
+// correction off the panel shows each value as v * pct / 100, see scale_frame).
+struct Power {
+  int want = 0, pct = 0;        // effective brightness asked for, and what the limiter allows
+  double amps = 0, amps_unlimited = 0;
+  bool limited() const { return pct < want; }
+};
+
+// The limiter: the highest pct <= want whose estimate stays under the ceiling.
+inline Power limit_power(const Frame &f, int panel_size, double amps_full_white_per_panel,
+                         int want, double ceiling_amps) {
+  const double full = estimate_amps(f, panel_size, amps_full_white_per_panel, 100);
+  Power p{want, want, full * want / 100, full * want / 100};
+  if (p.amps > ceiling_amps) {
+    p.pct = int(ceiling_amps / full * 100);
+    while (p.pct > 0 && full * p.pct / 100 > ceiling_amps) p.pct--;  // float rounding guard
+    p.amps = full * p.pct / 100;
+  }
+  return p;
+}
+
+// The frame as the panels show it at pct (same integer math as the library):
+// the preview stream sends this, and tests check the ceiling against it.
+inline void scale_frame(const Frame &f, int pct, Frame &out) {
+  for (size_t i = 0; i < f.rgb.size(); i++) out.rgb[i] = f.rgb[i] * pct / 100;
 }
 
 // display.gamma as a LUT, for output the engine generates (patterns, effects,
