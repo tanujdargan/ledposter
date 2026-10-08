@@ -474,9 +474,27 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
     st.system = system.System(net_runner or net.run_subprocess, data_dir, hotspot_iface=st.net.wifi_device,
                               git=git_runner)
 
+    def cfg_mtime():
+        try:
+            return os.stat(st.cfg_path).st_mtime_ns
+        except OSError:
+            return None
+    st.cfg_mtime = cfg_mtime()
+
     def save():
         config.save(st.cfg, st.cfg_path)
+        st.cfg_mtime = cfg_mtime()
     st.save = save
+
+    @app.middleware("http")
+    async def reload_edited_config(request, call_next):
+        # A hand edit of config.yaml (or the installer) must win over the copy loaded at
+        # startup; otherwise the next save from the app silently writes the old values back.
+        m = cfg_mtime()
+        if m is not None and m != st.cfg_mtime:
+            st.cfg, st.cfg_mtime = config.load(st.cfg_path), m
+            log.info("config.yaml changed on disk; reloaded")
+        return await call_next(request)
 
     def save_soon(delay=1.5):
         """Coalesces slider drags into one write."""
