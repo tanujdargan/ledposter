@@ -242,7 +242,10 @@ step_release() {
     run rm -rf "$REL"
     run git clone -q "$SRC" "$REL"
     if [ -d "$SRC/vendor/rpi-rgb-led-matrix/lib" ]; then
-      run git -C "$REL" submodule update --init --reference "$SRC/vendor/rpi-rgb-led-matrix" --dissociate
+      # Clone the submodule from the local checkout: no network, and unlike --reference it
+      # also works when that checkout is shallow.
+      run git -C "$REL" config submodule.vendor/rpi-rgb-led-matrix.url "$SRC/vendor/rpi-rgb-led-matrix"
+      run git -C "$REL" -c protocol.file.allow=always submodule update --init
     else
       run git -C "$REL" submodule update --init
     fi
