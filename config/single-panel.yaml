@@ -15,7 +15,7 @@ matrix:
 
 power:
   ceiling_amps: 13.0               # frames are scaled down to never exceed this (15 max: the supply)
-  amps_full_white_per_panel: 6.0   # calibration: measure one panel at full white and set this
+  amps_full_white_per_panel: 2.2   # measured on these P3 panels: 2 at full white = 22W at the 20V input (~2.0A each at 5V); code default 6.0 if unset
 
 # effective brightness = min(user, auto), then the power limiter on top.
 brightness:
