@@ -30,6 +30,7 @@ Power-cut safety: every file above is written tmp + fsync + rename; symlinks are
 renaming a temp symlink; a half-built release is never `current`; `run` at boot resumes whatever
 was in flight. Failure in fetch/build/test never touches `current`.
 """
+import atexit
 import json
 import os
 import pwd
@@ -38,6 +39,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
@@ -172,11 +174,28 @@ def origin_url(app_dir):
     return r.stdout.strip() or "git@github.com:tanujdargan/ledposter.git"
 
 
+def private_key_copy(key):
+    """The deploy key is root:ledposter 0640 so the web app can check for updates. ssh refuses
+    a group-readable key when it runs as the key's owner (root, the updater), so root gets a
+    0600 copy in a private temp dir, removed at exit."""
+    st = os.stat(key)
+    if st.st_uid != os.geteuid() or not st.st_mode & 0o077:
+        return key
+    d = tempfile.mkdtemp(prefix="ledposter-key-")  # 0700
+    atexit.register(shutil.rmtree, d, True)
+    copy = os.path.join(d, "deploy_key")
+    fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as out, open(key, "rb") as src:
+        out.write(src.read())
+    return copy
+
+
 def git_env(app_dir):
     """Deploy key (recommended) via GIT_SSH_COMMAND; never prompts."""
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", HOME=app_dir)
     key = os.path.join(app_dir, "deploy_key")
     if os.path.exists(key):
+        key = private_key_copy(key)
         # known_hosts is seeded by install.sh (ssh-keyscan github.com) and root-owned; the web app's
         # `git ls-remote` can read it but not add to it (ssh warns and carries on).
         env["GIT_SSH_COMMAND"] = (f"ssh -i {key} -o IdentitiesOnly=yes -o BatchMode=yes "

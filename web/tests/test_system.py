@@ -406,7 +406,7 @@ def test_fetch_url_prefers_deploy_key_over_token(tmp_path):
     assert updater.fetch_url(str(app)) == "https://x-access-token:github_pat_123@github.com/owner/repo.git"
     (app / "deploy_key").write_text("key")
     assert updater.fetch_url(str(app)) == "git@github.com:owner/repo.git"
-    assert f"-i {app}/deploy_key" in updater.git_env(str(app))["GIT_SSH_COMMAND"]
+    assert "/deploy_key -o IdentitiesOnly=yes" in updater.git_env(str(app))["GIT_SSH_COMMAND"]
     assert updater.list_tags(str(app), lambda argv, env, timeout: (0, "abc\trefs/tags/m8\nabd\trefs/tags/m9\n", "")) == ["m8", "m9"]
     with pytest.raises(updater.StepError, match="Permission denied"):
         updater.list_tags(str(app), lambda argv, env, timeout: (128, "", "git@github.com: Permission denied (publickey)."))
@@ -585,3 +585,15 @@ def test_limiter_ceiling_is_capped_at_the_supply_budget(authed, data, tmp_path):
     for raw, want in (("40", 15.0), ("13", 13.0), ("0", 13.0), ("-2", 13.0), ("abc", 13.0)):
         p.write_text(f"version: 1\npower: {{ceiling_amps: {raw}, amps_full_white_per_panel: 6}}\n")
         assert config.load(str(p))["power"]["ceiling_amps"] == want, raw
+
+
+def test_deploy_key_copy_for_its_owner(tmp_path):
+    """ssh refuses a group-readable key run by its owner (root, the updater): it gets a 0600 copy."""
+    key = tmp_path / "deploy_key"
+    key.write_bytes(b"KEY")
+    key.chmod(0o640)
+    copy = updater.private_key_copy(str(key))
+    assert copy != str(key) and open(copy, "rb").read() == b"KEY"
+    assert os.stat(copy).st_mode & 0o777 == 0o600
+    key.chmod(0o600)
+    assert updater.private_key_copy(str(key)) == str(key)
