@@ -16,9 +16,9 @@
 # What it does, in order: apt packages, the service user ledwall and the build user
 # ledwall-build, the /data partition (or --data-dir), the release under /data/app (unpacked,
 # or built as ledwall-build; owned by root), the data files (config, setup password), system
-# files (units, polkit, avahi, dnsmasq, journald, NetworkManager, apt, sysctl),
+# files (units, polkit, avahi, dnsmasq, journald, NetworkManager, apt, sysctl, modprobe),
 # persistence of Wi-Fi profiles across the overlay, hostname, boot config (audio off,
-# isolcpus=3, I2C), services, firewall, SSH mode, and last the read-only
+# isolcpus=3, performance governor, I2C), services, firewall, SSH mode, and last the read-only
 # overlay (needs a reboot). --dry-run prints every action without doing it. Never locks you
 # out: SSH is left as it is until the end and the resulting mode is printed; over SSH without
 # a key it refuses unless --ssh is given. The login user you run it as is never changed.
@@ -422,7 +422,8 @@ step_system_files() {
   inst 644 "$SRC/system/etc/NetworkManager-ledposter.conf" /etc/NetworkManager/conf.d/ledposter.conf
   inst 644 "$SRC/system/etc/journald-ledposter.conf" /etc/systemd/journald.conf.d/ledposter.conf
   inst 644 "$SRC/system/etc/apt-52ledposter" /etc/apt/apt.conf.d/52ledposter
-  inst 644 "$SRC/system/etc/sysctl-ledposter.conf" /etc/sysctl.d/90-ledposter.conf  # E1.31 multicast groups (M7)
+  inst 644 "$SRC/system/etc/sysctl-ledposter.conf" /etc/sysctl.d/90-ledposter.conf  # E1.31 multicast groups (M7), RT throttling off
+  inst 644 "$SRC/system/etc/modprobe-ledposter-blacklist-audio.conf" /etc/modprobe.d/ledposter-blacklist-audio.conf
   # fake-hwclock keeps its stamp on /data, so the clock is roughly right before NTP even with
   # the overlay (the stamp file would otherwise be frozen at install time).
   write 644 /etc/default/fake-hwclock <<EOF
@@ -462,13 +463,20 @@ step_hostname() {
 }
 
 step_boot_config() {
-  log "Boot config (audio off, isolcpus=3, I2C on)"
+  log "Boot config (audio off, isolcpus=3, performance governor, I2C on)"
   if ! is_pi; then note "not a Raspberry Pi OS boot partition: skipping"; return; fi
-  local cfg=/boot/firmware/config.txt cmd=/boot/firmware/cmdline.txt
+  local cfg=/boot/firmware/config.txt cmd=/boot/firmware/cmdline.txt tok name
   if findmnt -no OPTIONS /boot/firmware | grep -q '^ro,\|,ro,\|,ro$'; then run mount -o remount,rw /boot/firmware; fi
   if grep -q '^dtparam=audio=on' "$cfg"; then run sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$cfg"; fi
   if ! grep -q '^dtparam=audio=off' "$cfg"; then run sh -c "echo 'dtparam=audio=off' >> $cfg"; fi
-  if ! grep -q 'isolcpus=' "$cmd"; then run sed -i '1 s/$/ isolcpus=3/' "$cmd"; fi
+  # cmdline.txt is one line. A token is appended to it only when its key is not there at all,
+  # so a value set by hand is kept and nothing is ever added twice. isolcpus=3: the matrix
+  # library's refresh thread has core 3 to itself; the performance governor keeps the clock
+  # (and so the refresh timing) from stepping with load.
+  for tok in isolcpus=3 cpufreq.default_governor=performance; do
+    name="${tok%%=*}="
+    if ! grep -Eq "(^|[[:space:]])${name//./\\.}" "$cmd"; then run sed -i "1 s/\$/ $tok/" "$cmd"; fi
+  done
   run raspi-config nonint do_i2c 0
 }
 
