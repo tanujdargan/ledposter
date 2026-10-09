@@ -363,6 +363,11 @@ def test_build_is_light_and_needs_a_compiler(tmp_path):
     u, w = make_updater(tmp_path / "b", compiler=False)
     u.write_request({"action": "update", "target": "m9"})
     assert u.run_once() == "failed" and "tools/deploy.sh" in u.status()["error"] and not w.calls
+    # installed with --prebuilt on an image that ships a compiler anyway: the marker still refuses
+    u, w = make_updater(tmp_path / "c")
+    (tmp_path / "c" / "app" / ".prebuilt").write_text("installed from a prebuilt release\n")
+    u.write_request({"action": "update", "target": "m9"})
+    assert u.run_once() == "failed" and "prebuilt" in u.status()["error"] and not w.calls
     unit = open(os.path.join(os.path.dirname(updater.__file__), "..", "..", "system", "systemd", "ledposter-update.service")).read()
     assert "Nice=19" in unit and "IOSchedulingClass=idle" in unit and "CPUWeight=10" in unit
 

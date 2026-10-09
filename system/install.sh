@@ -344,6 +344,9 @@ step_release() {
       "$REL/web/.venv/bin/python" -I -c 'import fastapi, uvicorn, yaml, numpy' || die "the prebuilt venv does not import its packages"
     fi
     run touch "$REL/.ready"
+    # The OS image may ship a compiler anyway (Raspberry Pi OS Lite trixie does): this marker, not
+    # the absence of gcc, is what stops the in-app updater from building on the wall.
+    write 644 "$DATA/app/.prebuilt" <<< "installed from a prebuilt release; update with tools/deploy.sh"
   else
     run rm -rf "$REL"
     run git clone -q "$SRC" "$REL"

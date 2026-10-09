@@ -448,8 +448,12 @@ class Updater:
                 "MAKEFLAGS": "-j1", "LANG": "C.UTF-8"}
 
     def check_compiler(self):
-        """A wall installed from a prebuilt release has no compiler (install.sh --prebuilt skips the
-        build packages): say so before anything is fetched."""
+        """A wall installed from a prebuilt release must not build (install.sh --prebuilt writes
+        app/.prebuilt; the OS image may still ship a compiler), nor can one without make/c++:
+        say so before anything is fetched."""
+        if os.path.exists(os.path.join(self.app, ".prebuilt")):
+            raise StepError("this wall was installed from a prebuilt release and does not build on the device "
+                            "(it is too weak and may be under-powered): update it from a computer with tools/deploy.sh")
         missing = [c for c in ("make", "c++") if not self._which(c)]
         if missing:
             raise StepError(f"this wall cannot build releases ({', '.join(missing)} not installed; it was installed "
