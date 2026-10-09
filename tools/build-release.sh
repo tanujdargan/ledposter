@@ -97,8 +97,14 @@ docker run --rm --platform "$PLATFORM" -v "$work/src:/src:ro" -v "$OUT:/out" \
     rel="/data/app/releases/$VERSION"
     mkdir -p /data/app/releases
     cp -a /src "$rel"
-    make -C "$rel/engine" -j"$(nproc)"
+    # Code for the Pi 3B CPU, not this machine (the vendor library defaults to -march=native).
+    make -C "$rel/engine" -j"$(nproc)" ARCH_FLAGS=-mcpu=cortex-a53
     make -C "$rel/engine" test
+    # Nothing past ARMv8.0 may reach the Pi 3B: ARMv8.1+ atomics (LSE), RCpc loads, dot product.
+    # libgcc'"'"'s __aarch64_* outline-atomics helpers are exempt: they check the CPU at run time.
+    bad="$(objdump -d "$rel/engine/ledengine" | awk '"'"'/^[0-9a-f]+ <.*>:/ {fn = $2}
+      /\t(ldapr|ldaprb|ldaprh|cas|casa|casal|casl|casp|ldadd|ldaddal|ldaddl|ldclr|ldeor|ldset|swp|swpal|sdot|udot)\t/ && fn !~ /^<__aarch64_/ {print fn}'"'"' | sort -u)"
+    [ -z "$bad" ] || { echo "ledengine has instructions the Pi 3B (ARMv8.0) cannot run, in: $bad" >&2; exit 1; }
     python3 -m venv --system-site-packages "$rel/web/.venv"
     "$rel/web/.venv/bin/pip" install -q --no-cache-dir --retries 5 --timeout 60 -r "$rel/web/requirements.txt"
     (cd "$rel/web" && .venv/bin/python -c "import ledposter.app")

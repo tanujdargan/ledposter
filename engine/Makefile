@@ -5,6 +5,10 @@
 # Mac/Linux: make sim -> build/ledengine-sim, same engine with a stub matrix (needs yaml-cpp, nlohmann-json)
 RGB_LIB ?= ../vendor/rpi-rgb-led-matrix
 CXXFLAGS ?= -O2 -Wall -Wextra -std=c++17
+# Target CPU. Empty = the vendor library's default, -march=native: right when building on the
+# Pi itself, wrong anywhere else (built on Apple Silicon it used ARMv8.3+ instructions and the
+# Pi 3B died with SIGILL). tools/build-release.sh sets -mcpu=cortex-a53 (Pi 3B; also runs on 4/5).
+ARCH_FLAGS ?=
 # Default fonts.dir: the vendor fonts in this checkout (config fonts.dir overrides it).
 FONTS_DIR ?= $(abspath $(RGB_LIB)/fonts)
 DEFS = -DLEDPOSTER_FONTS_DIR='"$(FONTS_DIR)"'
@@ -19,11 +23,11 @@ TEST_SAN ?= $(if $(filter aarch64,$(shell uname -m)),,-fsanitize=address,undefin
 BDF = $(RGB_LIB)/lib/bdf-font.cc
 
 ledengine: src/main.cpp src/*.h $(RGB_LIB)/lib/librgbmatrix.a
-	$(CXX) $(CXXFLAGS) $(DEFS) -I$(RGB_LIB)/include src/main.cpp -o $@ \
+	$(CXX) $(CXXFLAGS) $(ARCH_FLAGS) $(DEFS) -I$(RGB_LIB)/include src/main.cpp -o $@ \
 		$(RGB_LIB)/lib/librgbmatrix.a -lyaml-cpp -lpthread -lrt -lm
 
 $(RGB_LIB)/lib/librgbmatrix.a:
-	$(MAKE) -C $(RGB_LIB)/lib
+	$(MAKE) -C $(RGB_LIB)/lib $(if $(ARCH_FLAGS),CPU_ARCH_FLAGS="$(ARCH_FLAGS)")
 
 sim: build/ledengine-sim
 
