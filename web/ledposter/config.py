@@ -2,7 +2,7 @@
 
 The web app is the only writer. Every write goes through save(): tmp file, fsync,
 rename, fsync dir, mode 640 (the file holds the admin password hash and token hashes;
-the group is the `ledposter` group the engine drops to, so reload_config can read it).
+the group is the `ledwall` group the engine drops to, so reload_config can read it).
 """
 import copy
 import logging

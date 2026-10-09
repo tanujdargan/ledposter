@@ -1,9 +1,9 @@
 # The display engine. Starts as soon as /data is mounted (no network, no basic.target: the
 # boot screen must be on the wall well inside the 30s budget), shows the boot screen until
 # the web app restores the last mode, and is restarted forever if it dies. Runs as root only
-# until the matrix library has set up the GPIO, then drops to --user/--group (ledposter). The
-# sockets live in /run/ledposter (RuntimeDirectory, root:ledposter 0770), so the web app (user
-# ledposter) can connect. Where the sockets go and whom to drop to are flags here, in a
+# until the matrix library has set up the GPIO, then drops to --user/--group (ledwall). The
+# sockets live in /run/ledposter (RuntimeDirectory, root:ledwall 0770), so the web app (user
+# ledwall) can connect. Where the sockets go and whom to drop to are flags here, in a
 # root-owned unit, never read from /data/config.yaml: that file belongs to the web app's user,
 # and a compromised app must not steer what the engine does as root (docs/DEVIATIONS.md).
 # /data/app, where the binary lives, is root-owned (the web app can read and run it, not change
@@ -21,7 +21,7 @@ StartLimitIntervalSec=0
 Type=simple
 Environment=LEDPOSTER_DATA=/data
 WorkingDirectory=/data/app/current/engine
-ExecStart=/data/app/current/engine/ledengine --socket /run/ledposter/engine.sock --preview-socket /run/ledposter/frames.sock --user ledposter --group ledposter
+ExecStart=/data/app/current/engine/ledengine --socket /run/ledposter/engine.sock --preview-socket /run/ledposter/frames.sock --user ledwall --group ledwall
 Restart=always
 RestartSec=2
 Nice=-5
@@ -29,7 +29,7 @@ OOMScoreAdjust=-500
 RuntimeDirectory=ledposter
 RuntimeDirectoryMode=0770
 RuntimeDirectoryPreserve=yes
-Group=ledposter
+Group=ledwall
 TimeoutStopSec=5
 KillSignal=SIGTERM
 StandardOutput=journal

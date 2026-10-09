@@ -1,7 +1,7 @@
 # Applies the ufw rules the web app generated into /data/firewall.rules (ledposter.system
 # .firewall_rules: HTTP, mDNS, DDP/E1.31 only when enabled, SSH only when on, the hotspot's
 # DHCP/DNS on the Wi-Fi interface). Runs at every boot, since ufw's own saved rules are on
-# the overlay, and whenever the app starts it after a change (polkit lets the ledposter user
+# the overlay, and whenever the app starts it after a change (polkit lets the ledwall user
 # start exactly this unit). Ordered after /data (nofail) but not dependent on it: when the
 # partition is missing the script leaves the install-time rules alone. Installed by
 # system/install.sh.

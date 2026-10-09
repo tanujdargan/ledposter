@@ -214,13 +214,13 @@ static void test_privs() {
   assert(throws([] { socket_dir("/run/ledposter/engine.sock", "/run/ledposter/engine.sock"); }));  // same name
   assert(throws([] { socket_dir("", "/run/ledposter/frames.sock"); }));
 
-  check_drop_target("ledposter", 999, "ledposter", 999);
-  assert(throws([] { check_drop_target("root", 0, "ledposter", 999); }));
-  assert(throws([] { check_drop_target("toor", 0, "ledposter", 999); }));  // uid 0 under another name
-  assert(throws([] { check_drop_target("ledposter", 999, "root", 0); }));
-  assert(throws([] { check_drop_target("ledposter", 999, "wheel", 0); }));
-  assert(throws([] { check_drop_target("", 999, "ledposter", 999); }));
-  assert(throws([] { check_drop_target("ledposter", 999, "", 999); }));
+  check_drop_target("ledwall", 999, "ledwall", 999);
+  assert(throws([] { check_drop_target("root", 0, "ledwall", 999); }));
+  assert(throws([] { check_drop_target("toor", 0, "ledwall", 999); }));  // uid 0 under another name
+  assert(throws([] { check_drop_target("ledwall", 999, "root", 0); }));
+  assert(throws([] { check_drop_target("ledwall", 999, "wheel", 0); }));
+  assert(throws([] { check_drop_target("", 999, "ledwall", 999); }));
+  assert(throws([] { check_drop_target("ledwall", 999, "", 999); }));
 
   // The socket directory: made 0770 for the group if missing, else it must be a
   // real directory of the owner's that others can't write to.

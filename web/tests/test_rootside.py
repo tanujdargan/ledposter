@@ -4,11 +4,14 @@ data dir. What must hold: maintenance.conf is parsed, never sourced; every input
 following symlinks and refused unless it is a plain file of the service user; the DHCP rollback
 runs from the note at boot and treats its content as data."""
 import os
+import re
 import stat
 import subprocess
 import sys
 
 import pytest
+
+from ledposter import updater
 
 BIN = os.path.join(os.path.dirname(__file__), "..", "..", "system", "bin")
 SYS = os.path.join(BIN, "ledposter-sys")
@@ -166,3 +169,22 @@ def test_layout_creates_only_what_is_missing_and_follows_nothing(world, tmp_path
     (d / "media").symlink_to(tmp_path)
     rc, out = world.run("layout")
     assert rc == 1 and "symlink" in out
+
+
+def test_service_accounts_are_ledwall_not_the_login_user():
+    """The Pi's login user may well be called ledposter (and be in group sudo): no unit, polkit
+    rule or root-side script may treat that name as the wall's unprivileged account."""
+    system = os.path.join(BIN, "..")
+    units = {n: open(os.path.join(system, "systemd", n)).read() for n in os.listdir(os.path.join(system, "systemd"))}
+    assert "User=ledwall" in units["ledposter-web.service"] and "Group=ledwall" in units["ledposter-web.service"]
+    assert "--user ledwall --group ledwall" in units["ledposter-engine.service"] and "Group=ledwall" in units["ledposter-engine.service"]
+    for name, text in units.items():
+        assert not re.search(r"^(User|Group)=(?!ledwall$)", text, re.M), name  # root otherwise
+        assert not re.search(r"^ExecStart=.*--(user|group) (?!ledwall\b)", text, re.M), name
+    for name in os.listdir(os.path.join(system, "polkit")):
+        rule = open(os.path.join(system, "polkit", name)).read()
+        assert 'subject.user != "ledwall"' in rule and '"ledposter"' not in rule, name
+    assert "\nsvc_user=ledwall\n" in open(SYS).read()
+    install = open(os.path.join(system, "install.sh")).read()
+    assert "\nSVC_USER=ledwall\n" in install and "\nBUILD_USER=ledwall-build " in install
+    assert updater.SERVICE_USER == "ledwall" and updater.BUILD_USER == "ledwall-build"

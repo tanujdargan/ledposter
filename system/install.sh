@@ -8,14 +8,14 @@
 #                            [--hostname ledposter] [--no-overlay] [--data-dir PATH]
 #                            [--force-build] [--dry-run]
 #
-# What it does, in order: apt packages, the ledposter and ledposter-build users, the /data
+# What it does, in order: apt packages, the ledwall and ledwall-build users, the /data
 # partition (or --data-dir), the release under /data/app (engine build + venv, built as
-# ledposter-build, owned by root), the data files (config, setup password), system files (units,
+# ledwall-build, owned by root), the data files (config, setup password), system files (units,
 # polkit, avahi, dnsmasq, journald, NetworkManager, apt), persistence of Wi-Fi profiles across
 # the overlay, hostname, boot config (audio off, isolcpus=3, I2C), services, firewall, SSH mode,
 # and last the read-only overlay (needs a reboot). --dry-run prints every action without doing
 # it. Never locks you out: SSH is left as it is until the end and the resulting mode is printed;
-# over SSH without a key it refuses unless --ssh is given.
+# over SSH without a key it refuses unless --ssh is given. The login user is never changed.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,8 +27,10 @@ SSH_MODE=
 NO_OVERLAY=0
 FORCE_BUILD=0
 DRY=0
-SVC_USER=ledposter
-BUILD_USER=ledposter-build  # compiles and pip-installs releases; owns nothing that root runs
+# The unprivileged accounts. Not "ledposter": that is a likely name for the Pi's login user (in
+# group sudo), and these names get the polkit grants and own the app's files (docs/DEVIATIONS.md).
+SVC_USER=ledwall
+BUILD_USER=ledwall-build  # compiles and pip-installs releases; owns nothing that root runs
 # The one place the apt list lives. overlayroot is what raspi-config's overlay uses on
 # current Bookworm; older raspi-config builds do not need it and apt skips what it lacks.
 PACKAGES="git build-essential libyaml-cpp-dev nlohmann-json3-dev ffmpeg python3 python3-venv python3-pip
@@ -131,6 +133,20 @@ fi
 VERSION="$(git -C "$SRC" describe --tags --always --dirty 2> /dev/null || echo dev)"
 VERSION="${VERSION//\//-}"
 REL="$DATA/app/releases/$VERSION"
+# The service and build accounts are system users this script makes; never a person's login.
+# (The login user, often called ledposter, is only read: its authorized_keys, above.)
+for u in "$SVC_USER" "$BUILD_USER"; do
+  ent="$(getent passwd "$u" 2> /dev/null || true)"
+  [ -n "$ent" ] || continue
+  home="$(printf '%s\n' "$ent" | cut -d: -f6)"
+  in_sudo="$(id -nG "$u" 2> /dev/null | tr ' ' '\n' | grep -x sudo || true)"
+  if [ "${home#/home/}" != "$home" ] || [ -n "$in_sudo" ]; then
+    die "a login user named $u already exists (home $home${in_sudo:+, in group sudo}).
+  The installer needs that name for the wall's unprivileged account, which gets polkit rights and
+  owns the app's files, and will not take over a person's account. Rename or remove that user
+  (from another login), then run the installer again."
+  fi
+done
 
 log "ledposter installer: $VERSION from $SRC -> $DATA (hostname $WANT_HOSTNAME, ssh $SSH_MODE, overlay $([ "$NO_OVERLAY" = 1 ] && echo off || echo on))"
 [ "$DRY" = 1 ] && note "dry run: nothing is changed"
@@ -229,13 +245,13 @@ step_data() {
 
 step_release() {
   log "Release $VERSION under $DATA/app"
-  # /data/app is root's: the engine runs from it as root, so the web app (user ledposter) may
-  # read and execute but never write here. make/venv/pip run as ledposter-build in the release
+  # /data/app is root's: the engine runs from it as root, so the web app (user ledwall) may
+  # read and execute but never write here. make/venv/pip run as ledwall-build in the release
   # dir, which root then takes over (same as web/ledposter/updater.py; docs/DEVIATIONS.md).
   owned_dir root:root 755 "$DATA/app"
   owned_dir root:root 755 "$DATA/app/releases"
   owned_dir "$BUILD_USER:$BUILD_USER" 700 "$DATA/app/build"
-  run rm -rf "$DATA/app/pip-cache"  # m8 kept the pip cache here, owned by ledposter
+  run rm -rf "$DATA/app/pip-cache"  # m8 kept the pip cache here, owned by its service user
   if [ -f "$REL/.ready" ] && [ "$FORCE_BUILD" = 0 ]; then
     note "already built (use --force-build to rebuild)"
   else
@@ -269,7 +285,7 @@ step_release() {
     note "creating the read-only deploy key $DATA/app/deploy_key"
     run ssh-keygen -q -t ed25519 -N "" -C "ledposter-$WANT_HOSTNAME" -f "$DATA/app/deploy_key"
   fi
-  # The key is read-only on GitHub; group ledposter so "Check for updates" (git ls-remote in
+  # The key is read-only on GitHub; group ledwall so "Check for updates" (git ls-remote in
   # the web app) can use it. Root's otherwise.
   run chown -h root:root "$DATA/app/origin" "$DATA/app/deploy_key.pub"
   run chown -h "root:$SVC_USER" "$DATA/app/deploy_key"
@@ -284,7 +300,7 @@ step_release() {
       fi
     fi
   fi
-  # Anything left over from an m8 install (owned by ledposter) becomes root's; -h/-P: no symlink is followed.
+  # Anything left over from an m8 install (owned by its service user) becomes root's; -h/-P: no symlink is followed.
   run chown -h -R root:root "$DATA/app/releases" "$DATA/app/current"
   [ -L "$DATA/app/previous" ] && run chown -h root:root "$DATA/app/previous"
   for f in update.json pending.json; do [ -f "$DATA/app/$f" ] && run chown -h root:root "$DATA/app/$f"; done
@@ -294,13 +310,13 @@ step_release() {
 
 step_files() {
   log "Data files"
-  # The layout (docs/ARCHITECTURE.md): $DATA root:ledposter 1775, so the web app can add its
+  # The layout (docs/ARCHITECTURE.md): $DATA root:ledwall 1775, so the web app can add its
   # own files (config.yaml, secret, the unit inputs) but cannot rename or remove root's app/,
   # state/ and logs/; media/, ssh/ and logs/web/ are the web app's. Root never follows a path
   # the app owns: ledposter-sys layout only creates what is missing and chowns what it made.
   owned_dir "root:$SVC_USER" 1775 "$DATA"
   owned_dir root:root 755 "$DATA/state"
-  if [ -d "$DATA/logs" ] && [ ! -L "$DATA/logs" ] && [ "$(stat -c %u "$DATA/logs")" != 0 ]; then  # an m8 install: logs/ was ledposter's
+  if [ -d "$DATA/logs" ] && [ ! -L "$DATA/logs" ] && [ "$(stat -c %u "$DATA/logs")" != 0 ]; then  # an m8 install: logs/ was the service user's
     run chown -h root:root "$DATA/logs"
     for f in update.log maintenance.log; do [ -f "$DATA/logs/$f" ] && run chown -h root:root "$DATA/logs/$f"; done
     run rm -f "$DATA/logs"/web.log*

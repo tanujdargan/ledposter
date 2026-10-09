@@ -1,4 +1,4 @@
-# The web app (FastAPI, port 80). Runs as the unprivileged ledposter user with only the
+# The web app (FastAPI, port 80). Runs as the unprivileged ledwall user with only the
 # capability to bind port 80; root-needing actions go through fixed units via polkit
 # (system/polkit). Independent of the engine: either one can crash and come back alone.
 # Ordered after the engine so the first thing it does is restore the last mode, but it must
@@ -13,8 +13,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=ledposter
-Group=ledposter
+User=ledwall
+Group=ledwall
 Environment=LEDPOSTER_DATA=/data PYTHONUNBUFFERED=1 HOME=/data/app
 # /data/app is root's: let `git describe` (Settings > Software) read it without "dubious ownership"
 Environment=GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=*

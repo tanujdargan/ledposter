@@ -3,7 +3,7 @@
 # system/systemd. Installed as /usr/local/bin/ledposter-sys. Every action reads its input from
 # a file at the top of $LEDPOSTER_DATA that the web app wrote (ledposter.system), validates it,
 # and never takes arguments from the app itself. The web app runs as the unprivileged
-# `ledposter` user, so its files are untrusted: `input` opens them without following symlinks
+# `ledwall` user, so its files are untrusted: `input` opens them without following symlinks
 # and refuses anything but a regular file it owns; every line is matched against a strict
 # pattern and used as data (never sourced, eval'd or handed to a shell); root only creates
 # and chowns directories it has just made; $data/state, $data/app and $data/logs are root's.
@@ -21,7 +21,7 @@ set -eu
 
 data="${LEDPOSTER_DATA:-/data}"
 state="$data/state"
-svc_user=ledposter
+svc_user=ledwall
 # Mirrors ledposter.system.RULE_RE / KEY_RE / MAINT_RE: the only lines accepted from the app's files.
 rule_re='^(default (deny|allow) (incoming|outgoing)|logging off|allow [0-9]{1,5}/(tcp|udp)|allow in on [a-z0-9.-]{1,15} to any port [0-9]{1,5} proto (tcp|udp))$'
 key_re='^(sk-)?(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp(256|384|521))(@openssh\.com)? AAAA[A-Za-z0-9+/]+={0,3}( [^ ].*)?$'
@@ -172,7 +172,7 @@ set_hostname() {
   fi
 }
 
-# The data dir's layout (docs/ARCHITECTURE.md): $data itself root:ledposter 1775 (sticky, so
+# The data dir's layout (docs/ARCHITECTURE.md): $data itself root:ledwall 1775 (sticky, so
 # the service user can add its own files but not rename or remove root's), app/ state/ logs/
 # root's, media/ ssh/ logs/web/ the service user's. Only creates what is missing.
 layout() {

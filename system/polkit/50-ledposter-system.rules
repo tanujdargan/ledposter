@@ -1,4 +1,4 @@
-// Milestone 8: the system actions Settings offers, for the `ledposter` service user, without
+// Milestone 8: the system actions Settings offers, for the `ledwall` service user, without
 // root or sudo. Same pattern as 49-ledposter-network.rules: only fixed units whose content
 // root controls, each reading its inputs from a file under /data written by the app.
 // Installed by system/install.sh as /etc/polkit-1/rules.d/50-ledposter-system.rules.
@@ -8,7 +8,7 @@
 //   lives under the root-owned /data/app, so a restart runs root's code, not the app's.
 // - reboot through logind (`systemctl reboot` as a non-root user asks logind)
 polkit.addRule(function (action, subject) {
-  if (subject.user != "ledposter") return polkit.Result.NOT_HANDLED;
+  if (subject.user != "ledwall") return polkit.Result.NOT_HANDLED;
   if (action.id == "org.freedesktop.systemd1.manage-units") {
     var unit = action.lookup("unit"), verb = action.lookup("verb");
     var startable = ["ledposter-firewall.service", "ledposter-ssh.service", "ledposter-update.service",

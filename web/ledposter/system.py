@@ -1,5 +1,5 @@
 """Milestone 8: what the web app asks the OS for. Root-needing actions (firewall, SSH, update,
-factory reset, service restarts, reboot) go through fixed systemd units the `ledposter` user may
+factory reset, service restarts, reboot) go through fixed systemd units the `ledwall` user may
 start via polkit (system/polkit/50-ledposter-system.rules); each unit reads its inputs from a
 file at the top of $LEDPOSTER_DATA written here (firewall.rules, ssh/, maintenance.conf,
 maintenance-request, factory-reset, update-request.json, net-rollback), so the app never needs
@@ -11,7 +11,7 @@ are plain functions so they are unit tested without a Pi.
 
     python -m ledposter.system init-config PATH [--ssh disabled|key-only] [--keys FILE]
         used by install.sh and the factory reset: write a fresh config.yaml for the Pi
-        (engine user/group ledposter, port 80) and the files the units read from it
+        (port 80; the engine's user and group come from its unit) and the files the units read from it
 """
 import argparse
 import logging

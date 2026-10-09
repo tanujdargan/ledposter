@@ -1,5 +1,5 @@
 # Started by the web app after `hostnamectl set-hostname` (polkit allows exactly that for the
-# ledposter user). hostnamectl does not touch /etc/hosts, so this rewrites the 127.0.1.1 line
+# ledwall user). hostnamectl does not touch /etc/hosts, so this rewrites the 127.0.1.1 line
 # as root and nudges Avahi. Installed by M8.
 [Unit]
 Description=Sync /etc/hosts with the LED wall's hostname

@@ -184,12 +184,12 @@ check_health() {
   grep -qE "^[^#].* $DATA .*nofail" /etc/fstab 2> /dev/null || { ok=0; why="$why $DATA lacks nofail in fstab;"; }
   [ -f "$(readlink -f "$DATA/app/current")/.ready" ] || { ok=0; why="$why current release has no .ready;"; }
   # the ownership split that keeps the web app out of root (docs/ARCHITECTURE.md)
-  [ "$(stat -c '%U:%G %a' "$DATA")" = "root:ledposter 1775" ] || { ok=0; why="$why $DATA is not root:ledposter 1775;"; }
+  [ "$(stat -c '%U:%G %a' "$DATA")" = "root:ledwall 1775" ] || { ok=0; why="$why $DATA is not root:ledwall 1775;"; }
   for d in app state logs; do
     [ "$(stat -c %U "$DATA/$d")" = root ] || { ok=0; why="$why $DATA/$d not owned by root;"; }
-    if runuser -u ledposter -- test -w "$DATA/$d" 2> /dev/null; then ok=0; why="$why $DATA/$d writable by ledposter;"; fi
+    if runuser -u ledwall -- test -w "$DATA/$d" 2> /dev/null; then ok=0; why="$why $DATA/$d writable by ledwall;"; fi
   done
-  runuser -u ledposter -- test -x "$DATA/app/current/engine/ledengine" || { ok=0; why="$why ledposter cannot run the current release;"; }
+  runuser -u ledwall -- test -x "$DATA/app/current/engine/ledengine" || { ok=0; why="$why ledwall cannot run the current release;"; }
   "$PY" -c "import yaml,sys; yaml.safe_load(open('$DATA/config.yaml'))" 2> /dev/null || { ok=0; why="$why config.yaml does not parse;"; }
   if find "$DATA" -name '*.tmp' -o -name '*.part' 2> /dev/null | grep -q .; then ok=0; why="$why temp files left under $DATA;"; fi
   local bad

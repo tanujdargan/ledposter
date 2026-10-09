@@ -47,7 +47,7 @@ sudo journalctl -b -p err                           # nothing from ledposter-*
 sudo tune2fs -l /dev/disk/by-label/ledpostdata | grep -i 'state\|mount count'
 ```
 
-The `health` check verifies: both services `active`, `/proc/cmdline` has the overlay, `/data` is mounted `noatime` and `nofail`, every media item with `status: ready` has `frames.rgb` of exactly `frames * w * h * 3` bytes and a `meta.json`, no `.tmp`/`.part` files anywhere under `/data`, `config.yaml` parses, `/data/app/current` points at a release with `.ready`, and the ownership split holds (`/data/app`, `/data/state`, `/data/logs` root's and not writable by `ledposter`; `/data` itself `root:ledposter` 1775). Record: the output, and whether the last mode came back on its own after each boot (it should: `last_mode` in the config). Pass: all green after the 20th pull.
+The `health` check verifies: both services `active`, `/proc/cmdline` has the overlay, `/data` is mounted `noatime` and `nofail`, every media item with `status: ready` has `frames.rgb` of exactly `frames * w * h * 3` bytes and a `meta.json`, no `.tmp`/`.part` files anywhere under `/data`, `config.yaml` parses, `/data/app/current` points at a release with `.ready`, and the ownership split holds (`/data/app`, `/data/state`, `/data/logs` root's and not writable by `ledwall`; `/data` itself `root:ledwall` 1775). Record: the output, and whether the last mode came back on its own after each boot (it should: `last_mode` in the config). Pass: all green after the 20th pull.
 
 ## 7. Fresh unit joins a new Wi-Fi network through the setup hotspot from a phone in under 3 minutes
 

@@ -7,7 +7,7 @@ runs it with the system python3 as root, from /data/app/current.
     python3 updater.py request rollback
     python3 updater.py status | tags
 
-Layout (docs/ARCHITECTURE.md). $LEDPOSTER_DATA/app is root-owned; the web app (user `ledposter`)
+Layout (docs/ARCHITECTURE.md). $LEDPOSTER_DATA/app is root-owned; the web app (user `ledwall`)
 can read and run the current release but not change it:
   releases/<tag>/     a git checkout of that tag with the built engine and its venv; `.ready` inside
                       marks a finished build (a dir without it is garbage and gets rebuilt)
@@ -15,7 +15,7 @@ can read and run the current release but not change it:
   update.json         progress for the UI, rewritten at every step
   pending.json        {"new", "old", "previous", "action"} from just before a switch until the health
                       check passed, so a power cut mid-switch is finished (or rolled back) at boot
-  build/              home and pip cache of the `ledposter-build` user that compiles and pip-installs
+  build/              home and pip cache of the `ledwall-build` user that compiles and pip-installs
   origin, deploy_key, known_hosts, token   how to reach the private repo (README: Software updates)
 $LEDPOSTER_DATA/update-request.json is the one input the web app writes: {"action": "update",
 "target": "m9"} or {"action": "rollback"}. It is read with O_NOFOLLOW and must be a regular file
@@ -23,8 +23,8 @@ owned by the service user; the target must match TAG_RE and be a tag the reposit
 
 Who runs what: git clone runs as root (the repo is reached with the deploy key, the tag is
 checked against `git ls-remote` first); make, venv, pip and the tests run as the unprivileged
-`ledposter-build` user in the release dir, which root then chowns to itself and marks `.ready`.
-So root never executes anything the `ledposter` user could have written (docs/DEVIATIONS.md).
+`ledwall-build` user in the release dir, which root then chowns to itself and marks `.ready`.
+So root never executes anything the `ledwall` user could have written (docs/DEVIATIONS.md).
 
 Power-cut safety: every file above is written tmp + fsync + rename; symlinks are replaced by
 renaming a temp symlink; a half-built release is never `current`; `run` at boot resumes whatever
@@ -44,8 +44,8 @@ import time
 import urllib.request
 
 HEALTH_TIMEOUT_S = 90
-SERVICE_USER = "ledposter"
-BUILD_USER = "ledposter-build"
+SERVICE_USER = "ledwall"
+BUILD_USER = "ledwall-build"
 TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 REQUEST_FILE = "update-request.json"
 MAX_INPUT_BYTES = 65536
@@ -175,7 +175,7 @@ def origin_url(app_dir):
 
 
 def private_key_copy(key):
-    """The deploy key is root:ledposter 0640 so the web app can check for updates. ssh refuses
+    """The deploy key is root:ledwall 0640 so the web app can check for updates. ssh refuses
     a group-readable key when it runs as the key's owner (root, the updater), so root gets a
     0600 copy in a private temp dir, removed at exit."""
     st = os.stat(key)
