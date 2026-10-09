@@ -372,8 +372,12 @@ step_release() {
     # private umask once passed every root-side check and then failed as ledwall).
     (cd "$REL/web" && runuser -u "$SVC_USER" -- ./.venv/bin/python -c 'import ledposter.app') \
       || die "$SVC_USER cannot run the web app in $REL (permissions?); current is unchanged"
-    runuser -u "$SVC_USER" -- "$REL/engine/ledengine" --help 2>&1 | grep -q "usage: ledengine" \
-      || die "$SVC_USER cannot run $REL/engine/ledengine (permissions?); current is unchanged"
+    local help  # usage goes to stderr with exit 2, so match the text, not the status (pipefail)
+    help="$(runuser -u "$SVC_USER" -- "$REL/engine/ledengine" --help 2>&1 || true)"
+    case "$help" in
+      *"usage: ledengine"*) ;;
+      *) die "$SVC_USER cannot run $REL/engine/ledengine (permissions?): $help; current is unchanged" ;;
+    esac
   fi
   run ln -sfn "releases/$VERSION" "$DATA/app/.current.tmp"
   run mv -fT "$DATA/app/.current.tmp" "$DATA/app/current"
