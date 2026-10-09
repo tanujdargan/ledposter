@@ -1,13 +1,15 @@
 # Software update with rollback (web/ledposter/updater.py). Started by the web app after it
-# wrote /data/update-request.json (polkit allows the ledposter user to start this unit), and
-# at every boot to finish a switch a power cut interrupted (health check, or roll back) or to
-# redo an interrupted build. Runs as root: /data/app (releases, current/previous, deploy key)
-# is root's so the web app cannot swap what the root-run engine executes. The request file is
-# read without following symlinks and its tag is checked against the repository's tags; the
-# clone runs as root (deploy key), make/venv/pip/tests as the unprivileged ledposter-build
-# user, then root takes the release over and marks it ready (docs/DEVIATIONS.md). Low
-# priority so the wall keeps its frame rate while the engine compiles. Installed by
-# system/install.sh.
+# wrote /data/update-request.json (polkit allows the ledwall user to start this unit), and
+# at every boot to finish a switch a power cut interrupted (health check, or roll back). A
+# build a power cut or reboot interrupted is never resumed at boot: the half-built release is
+# deleted and Settings says to start it again. Runs as root: /data/app (releases,
+# current/previous, deploy key) is root's so the web app cannot swap what the root-run engine
+# executes. The request file is read without following symlinks and its tag is checked
+# against the repository's tags; the clone runs as root (deploy key), make/venv/pip/tests as
+# the unprivileged ledwall-build user, then root takes the release over and marks it ready
+# (docs/DEVIATIONS.md). Idle CPU and I/O priority and a small CPU weight so the wall keeps its
+# frame rate while the engine compiles (one job, and only with enough free memory).
+# Installed by system/install.sh.
 [Unit]
 Description=LED wall software update
 RequiresMountsFor=/data
@@ -20,6 +22,7 @@ Environment=LEDPOSTER_DATA=/data HOME=/data/app
 ExecStart=/usr/bin/python3 /data/app/current/web/ledposter/updater.py run
 Nice=19
 IOSchedulingClass=idle
+CPUWeight=10
 TimeoutStartSec=2h
 ProtectHome=yes
 PrivateTmp=yes

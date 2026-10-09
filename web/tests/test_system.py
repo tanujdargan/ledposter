@@ -1,11 +1,14 @@
 """Milestone 8: firewall rule generation, SSH key parsing, release tag ordering, the factory reset
 plan, last-mode restore, the updater state machine (with a fake runner: success, failed health
-check -> rollback, failed build, rollback, power-cut resume from every status), atomic media
-cache writes, the install-time config, and /api/system through the app."""
+check -> rollback, failed build, rollback, a power cut in every status: a build is dropped, a
+switch is finished; the build's memory guard and limits), atomic media cache writes, the
+install-time config, and /api/system through the app."""
 import asyncio
 import json
 import os
 import stat
+import subprocess
+import sys
 import time
 
 import pytest
@@ -114,6 +117,7 @@ class FakeWorld:
         self.data, self.app = data, os.path.join(data, "app")
         self.calls, self.fail, self.healthy = [], set(), {}
         self.users = {}  # command name -> the user it was run as (None: root/ourselves)
+        self.envs = {}  # command name -> its environment
         self.tags = ["m7", "m8", "m9", "m10"]  # what the repository has
         self.t = [1_000_000.0]
 
@@ -121,6 +125,7 @@ class FakeWorld:
         self.calls.append(cmd)
         what = cmd[0]
         self.users[os.path.basename(what) if what != "git" else " ".join(cmd[:2])] = user
+        self.envs[os.path.basename(what) if what != "git" else " ".join(cmd[:2])] = env
         if what == "git" and cmd[1] == "ls-remote":
             if "ls-remote" in self.fail:
                 return 128, "fatal: Could not read from remote repository."
@@ -166,14 +171,28 @@ class FakeWorld:
         return self.t[0]
 
 
-def make_updater(tmp_path, releases=("m7", "m8"), current="m8", previous="m7"):
+MEMINFO = """MemTotal:         933164 kB
+MemFree:           61224 kB
+MemAvailable:     {avail} kB
+Buffers:           20480 kB
+Cached:           212992 kB
+SwapCached:            0 kB
+SwapTotal:        {swap} kB
+SwapFree:         {swap} kB
+"""
+
+
+def make_updater(tmp_path, releases=("m7", "m8"), current="m8", previous="m7", avail_kb=600 * 1024, swap_kb=0,
+                 compiler=True):
     data = str(tmp_path)
     w = FakeWorld(data)
     for r in releases:
         os.makedirs(os.path.join(w.app, "releases", r, "engine"))
         open(os.path.join(w.app, "releases", r, ".ready"), "w").close()
     (tmp_path / "app" / "origin").write_text("git@github.com:tanujdargan/ledposter.git\n")
-    u = updater.Updater(data, run=w.run, health=w.health, sleep=w.sleep, clock=w.clock, out=open(os.devnull, "w"))
+    u = updater.Updater(data, run=w.run, health=w.health, sleep=w.sleep, clock=w.clock, out=open(os.devnull, "w"),
+                        meminfo=lambda: MEMINFO.format(avail=avail_kb, swap=swap_kb),
+                        which=lambda c: f"/usr/bin/{c}" if compiler else None)
     if current:
         u.set_link("current", current)
     if previous:
@@ -263,16 +282,89 @@ def test_rollback_and_forward_again(tmp_path):
 
 
 @pytest.mark.parametrize("state", ["fetching", "building", "testing"])
-def test_power_cut_during_build_resumes_from_scratch(tmp_path, state):
+def test_power_cut_during_build_is_never_resumed(tmp_path, state):
+    """At boot a fetch/build/test that was cut off is dropped, not resumed: nothing runs, the
+    half-built release is deleted, current is untouched and Settings says to start it again."""
     u, w = make_updater(tmp_path)
     rel = tmp_path / "app" / "releases" / "m9"
     rel.mkdir()
     (rel / "half").write_text("partial clone")  # no .ready: garbage
+    u.write_request({"action": "update", "target": "m9"})  # still there from the run that was cut off
+    u.set_status(state=state, action="update", target="m9", from_release="m8", message="Building")
+    assert u.run_once() == "failed"
+    assert not w.calls  # no git, no make, no pip, no systemctl
+    assert not rel.exists() and not (tmp_path / "update-request.json").exists()
+    assert u.link("current") == "m8" and u.link("previous") == "m7"
+    assert sorted(os.listdir(tmp_path / "app" / "releases")) == ["m7", "m8"]
+    st = u.status()
+    assert st["state"] == "failed" and st["error"] == "interrupted"
+    assert st["message"] == ("Update to m9 was interrupted (power loss or reboot); still running m8. "
+                             "Start it again from Settings.")
+    assert u.run_once() == "idle" and not w.calls  # the next boot: nothing
+    # starting it again from Settings builds it from scratch
     u.write_request({"action": "update", "target": "m9"})
-    u.set_status(state=state, action="update", target="m9", from_release="m8", message="interrupted")
+    assert u.run_once() == "done" and u.link("current") == "m9" and (rel / ".ready").exists()
+
+
+def test_interrupted_never_deletes_a_finished_or_running_release(tmp_path):
+    # cut after .ready was written but before the switch: the release is kept, nothing runs
+    u, w = make_updater(tmp_path, releases=("m7", "m8", "m9"))
+    u.set_status(state="testing", action="update", target="m9", from_release="m8")
+    assert u.run_once() == "failed" and not w.calls
+    assert (tmp_path / "app" / "releases" / "m9" / ".ready").exists() and u.link("current") == "m8"
+    # a status that names the running or the previous release, or a path, deletes nothing
+    os.unlink(tmp_path / "app" / "releases" / "m7" / ".ready")
+    for target in ("m8", "m7", "../app", None):
+        u.set_status(state="building", action="update", target=target)
+        assert u.run_once() == "failed" and not w.calls, target
+    assert sorted(os.listdir(tmp_path / "app" / "releases")) == ["m7", "m8", "m9"]
+
+
+def test_interrupted_run_at_boot_exits_0(tmp_path):
+    """What ledposter-update.service runs at boot: `updater.py run` with an interrupted build
+    in update.json exits 0 (the unit does not fail) without running anything."""
+    u, _ = make_updater(tmp_path)
+    u.set_status(state="building", action="update", target="m9", from_release="m8")
+    (tmp_path / "app" / "releases" / "m9").mkdir()
+    script = os.path.join(os.path.dirname(updater.__file__), "updater.py")
+    r = subprocess.run([sys.executable, script, "run"], env=dict(os.environ, LEDPOSTER_DATA=str(tmp_path), PATH="/nonexistent"),
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout.strip() == "failed", r.stderr
+    assert not (tmp_path / "app" / "releases" / "m9").exists() and u.status()["error"] == "interrupted"
+
+
+def test_build_needs_free_memory(tmp_path):
+    assert updater.build_memory_mb(MEMINFO.format(avail=300 * 1024, swap=150 * 1024)) == 450
+    assert updater.build_memory_mb("MemTotal: 1 kB\n") is None and updater.build_memory_mb(None) is None
+    # 399MB of RAM, no swap: refused before make, venv or pip ran; current untouched
+    u, w = make_updater(tmp_path, avail_kb=399 * 1024)
+    u.write_request({"action": "update", "target": "m9"})
+    assert u.run_once() == "failed"
+    st = u.status()
+    assert "not enough free memory" in st["error"] and "399 MB" in st["error"] and "400 MB needed" in st["error"]
+    assert not any(c[0] in ("make", "python3") or c[0].endswith("/pip") for c in w.calls)
+    assert u.link("current") == "m8" and not (tmp_path / "app" / "releases" / "m9").exists()
+    # swap counts: 300MB + 100MB free swap is enough
+    u, w = make_updater(tmp_path / "b", avail_kb=300 * 1024, swap_kb=100 * 1024)
+    u.write_request({"action": "update", "target": "m9"})
     assert u.run_once() == "done"
-    assert u.link("current") == "m9" and not (rel / "half").exists() and (rel / ".ready").exists()
-    assert any(c[0] == "git" and c[1] == "clone" for c in w.calls)
+    assert updater.MIN_BUILD_MEMORY_MB == 400
+
+
+def test_build_is_light_and_needs_a_compiler(tmp_path):
+    u, w = make_updater(tmp_path)
+    u.write_request({"action": "update", "target": "m9"})
+    assert u.run_once() == "done"
+    make = [c for c in w.calls if c[0] == "make"]
+    assert make and not any(a.startswith("-j") for c in make for a in c)  # MAKEFLAGS decides
+    assert w.envs["make"]["MAKEFLAGS"] == "-j1" and "PIP_CACHE_DIR" not in w.envs["pip"]
+    assert "--no-cache-dir" in next(c for c in w.calls if c[0].endswith("/pip"))
+    # installed with --prebuilt: no compiler, refused before anything is fetched
+    u, w = make_updater(tmp_path / "b", compiler=False)
+    u.write_request({"action": "update", "target": "m9"})
+    assert u.run_once() == "failed" and "tools/deploy.sh" in u.status()["error"] and not w.calls
+    unit = open(os.path.join(os.path.dirname(updater.__file__), "..", "..", "system", "systemd", "ledposter-update.service")).read()
+    assert "Nice=19" in unit and "IOSchedulingClass=idle" in unit and "CPUWeight=10" in unit
 
 
 def test_power_cut_after_pending_written_but_before_switch(tmp_path):

@@ -15,7 +15,7 @@ can read and run the current release but not change it:
   update.json         progress for the UI, rewritten at every step
   pending.json        {"new", "old", "previous", "action"} from just before a switch until the health
                       check passed, so a power cut mid-switch is finished (or rolled back) at boot
-  build/              home and pip cache of the `ledwall-build` user that compiles and pip-installs
+  build/              home of the `ledwall-build` user that compiles and pip-installs
   origin, deploy_key, known_hosts, token   how to reach the private repo (README: Software updates)
 $LEDPOSTER_DATA/update-request.json is the one input the web app writes: {"action": "update",
 "target": "m9"} or {"action": "rollback"}. It is read with O_NOFOLLOW and must be a regular file
@@ -25,10 +25,16 @@ Who runs what: git clone runs as root (the repo is reached with the deploy key, 
 checked against `git ls-remote` first); make, venv, pip and the tests run as the unprivileged
 `ledwall-build` user in the release dir, which root then chowns to itself and marks `.ready`.
 So root never executes anything the `ledwall` user could have written (docs/DEVIATIONS.md).
+The build is kept light for a Pi 3B that keeps showing: one make job (MAKEFLAGS=-j1), no pip
+cache, idle priority (the unit), and it does not start without MIN_BUILD_MEMORY_MB free.
 
 Power-cut safety: every file above is written tmp + fsync + rename; symlinks are replaced by
-renaming a temp symlink; a half-built release is never `current`; `run` at boot resumes whatever
-was in flight. Failure in fetch/build/test never touches `current`.
+renaming a temp symlink; a half-built release is never `current`. Failure in fetch/build/test
+never touches `current`. At boot, `run` finishes or rolls back a switch that was in flight
+(pending.json), but never resumes a fetch/build/test: that release dir is deleted and the
+status says the update was interrupted, so a wall that lost power mid-build comes back on its
+old release without compiling. (A request file found then is the one that started that build:
+the web app refuses new requests while an update is active.)
 """
 import atexit
 import json
@@ -51,8 +57,35 @@ REQUEST_FILE = "update-request.json"
 MAX_INPUT_BYTES = 65536
 STEPS = {"update": ["fetching", "building", "testing", "switching", "restarting", "checking"],
          "rollback": ["switching", "restarting", "checking"]}
-RESUMABLE = ("fetching", "building", "testing")
+PRE_SWITCH = ("fetching", "building", "testing")  # interrupted here: dropped at boot, never resumed
 SERVICES = ["ledposter-engine.service", "ledposter-web.service"]
+# An on-device build does not start with less than this free (MemAvailable + SwapFree). The Pi 3B
+# has 1GB and keeps running the engine and the web app during the build; one g++ job on the
+# engine plus pip needs a few hundred MB on top. A build that ran out of memory while both were
+# up thrashed and locked a Pi 3B, so the margin is generous: refusing costs a retry, running
+# out costs the wall.
+MIN_BUILD_MEMORY_MB = 400
+
+
+def build_memory_mb(meminfo):
+    """MemAvailable + SwapFree in MB from the text of /proc/meminfo; None if MemAvailable is not in it."""
+    kb = {}
+    for line in (meminfo or "").splitlines():
+        name, _, rest = line.partition(":")
+        fields = rest.split()
+        if fields and fields[0].isdigit():
+            kb[name.strip()] = int(fields[0])
+    if "MemAvailable" not in kb:
+        return None
+    return (kb["MemAvailable"] + kb.get("SwapFree", 0)) // 1024
+
+
+def read_meminfo():
+    try:
+        with open("/proc/meminfo") as f:
+            return f.read()
+    except OSError:
+        return None
 
 
 class StepError(Exception):
@@ -239,7 +272,8 @@ def list_tags(app_dir, run=git_run):
 # -- the state machine -----------------------------------------------------------------
 
 class Updater:
-    def __init__(self, data_dir, run=None, health=None, sleep=time.sleep, clock=time.time, out=None):
+    def __init__(self, data_dir, run=None, health=None, sleep=time.sleep, clock=time.time, out=None,
+                 meminfo=read_meminfo, which=shutil.which):
         self.data = data_dir
         self.app = os.path.join(data_dir, "app")
         self.releases = os.path.join(self.app, "releases")
@@ -249,6 +283,7 @@ class Updater:
         self._run = run or self._run_subprocess
         self._health = health or self._health_http
         self.sleep, self.clock, self.out = sleep, clock, out or sys.stderr
+        self._meminfo, self._which = meminfo, which
 
     # -- files --
 
@@ -401,7 +436,7 @@ class Updater:
             self.cmd(["git", "-C", rel, "submodule", "update", "--init"], env=env, what="git submodule", timeout=900)
 
     def build_env(self):
-        """HOME and the pip cache of the build user, under the root-owned app dir."""
+        """HOME of the build user, under the root-owned app dir; one make job at a time."""
         if os.geteuid() == 0:
             try:
                 pw = pwd.getpwnam(BUILD_USER)
@@ -410,17 +445,38 @@ class Updater:
             os.makedirs(self.build_home, mode=0o700, exist_ok=True)
             os.chown(self.build_home, pw.pw_uid, pw.pw_gid)
         return {"HOME": self.build_home, "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-                "PIP_CACHE_DIR": os.path.join(self.build_home, "pip-cache"), "LANG": "C.UTF-8"}
+                "MAKEFLAGS": "-j1", "LANG": "C.UTF-8"}
+
+    def check_compiler(self):
+        """A wall installed from a prebuilt release has no compiler (install.sh --prebuilt skips the
+        build packages): say so before anything is fetched."""
+        missing = [c for c in ("make", "c++") if not self._which(c)]
+        if missing:
+            raise StepError(f"this wall cannot build releases ({', '.join(missing)} not installed; it was installed "
+                            "from a prebuilt release): update it from a computer with tools/deploy.sh")
+
+    def check_memory(self):
+        """Refuses to start a build with less than MIN_BUILD_MEMORY_MB of RAM + swap free."""
+        mb = build_memory_mb(self._meminfo())
+        if mb is None:
+            self.log("free memory unknown (no /proc/meminfo): not checked")
+            return
+        if mb < MIN_BUILD_MEMORY_MB:
+            raise StepError(f"not enough free memory to build on the wall: {mb} MB available (RAM + swap), "
+                            f"{MIN_BUILD_MEMORY_MB} MB needed. Restart the wall and try again, or update it "
+                            "from a computer with tools/deploy.sh")
+        self.log(f"free memory for the build: {mb} MB")
 
     def build(self, rel):
         """make, venv and pip as the build user: pip runs setup code from PyPI, make runs the
         checkout's Makefiles; neither as root. The checkout is handed over first."""
+        self.check_memory()
         env = self.build_env()
         chown_tree(rel, BUILD_USER)
-        self.cmd(["make", "-C", os.path.join(rel, "engine"), "-j2"], env=env, what="engine build", timeout=3600, user=BUILD_USER)
+        self.cmd(["make", "-C", os.path.join(rel, "engine")], env=env, what="engine build", timeout=3600, user=BUILD_USER)
         venv = os.path.join(rel, "web", ".venv")
         self.cmd(["python3", "-m", "venv", "--system-site-packages", venv], env=env, what="venv", user=BUILD_USER)
-        self.cmd([os.path.join(venv, "bin", "pip"), "install", "--quiet", "--retries", "5", "--timeout", "60",
+        self.cmd([os.path.join(venv, "bin", "pip"), "install", "--quiet", "--no-cache-dir", "--retries", "5", "--timeout", "60",
                   "-r", os.path.join(rel, "web", "requirements.txt")], env=env, what="pip install", timeout=1800, user=BUILD_USER)
 
     def test(self, rel):
@@ -437,6 +493,9 @@ class Updater:
         if pend:
             self.log(f"resuming: {pend['new']} switched but not yet checked")
             return self.finish(pend)
+        st = self.status()
+        if st.get("state") in PRE_SWITCH:
+            return self.interrupted(st)
         try:
             req = self.request()
         except InputError as e:
@@ -453,15 +512,27 @@ class Updater:
         self.set_status(state="failed", error="bad request", message=f"Bad update request: {req}")
         return "failed"
 
+    def interrupted(self, st):
+        """The last run stopped in fetch/build/test (power cut, reboot, crash). Never resumed: an
+        on-device build at boot competes with the engine and the web app starting on a Pi 3B.
+        The half-built release is deleted, `current` was never touched."""
+        tag, cur = st.get("target"), self.link("current")
+        if isinstance(tag, str) and TAG_RE.match(tag) and not self.ready(tag) and tag not in (cur, self.link("previous")):
+            shutil.rmtree(os.path.join(self.releases, tag), ignore_errors=True)
+            self.log(f"removed the half-built release {tag}")
+        self._clear(REQUEST_FILE)  # the request that started it
+        self.set_status(state="failed", error="interrupted",
+                        message=f"Update to {tag} was interrupted (power loss or reboot); still running {cur}. "
+                                "Start it again from Settings.")
+        return "failed"
+
     def update(self, tag):
-        st = self.status()
-        if st.get("state") in RESUMABLE and st.get("target") == tag:
-            self.log(f"resuming interrupted update to {tag}")
         rel = os.path.join(self.releases, tag)
         self.set_status(state="fetching", action="update", target=tag, from_release=self.link("current"),
                         started=int(self.clock()), error=None, message=f"Fetching {tag}")
         try:
             if not self.ready(tag):
+                self.check_compiler()
                 shutil.rmtree(rel, ignore_errors=True)
                 if tag not in self.remote_tags():
                     raise StepError(f"{tag} is not a release tag on the repository")
