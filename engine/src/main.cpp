@@ -61,6 +61,9 @@ struct Display {
     // Refresh-rate knobs (measured on a Pi 3B, 6x 64x64 chain: bits 8 + dither 2 = ~153Hz).
     o.pwm_dither_bits = m["pwm_dither_bits"].as<int>(0);
     o.pwm_lsb_nanoseconds = m["pwm_lsb_nanoseconds"].as<int>(130);
+    // Caps refresh at a steady rate below the dips our frame loop causes on a Pi 3
+    // (measured 103-155Hz unlimited): an uneven refresh rate reads as flicker.
+    o.limit_refresh_rate_hz = m["limit_refresh_rate_hz"].as<int>(0);
     o.brightness = 100;
     o.show_refresh_rate = m["show_refresh_rate"].as<bool>(false);
     rgb_matrix::RuntimeOptions rt;

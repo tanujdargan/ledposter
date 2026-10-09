@@ -12,7 +12,7 @@ def test_load_fills_defaults_and_keeps_unknown_keys(tmp_path):
     p.write_text("version: 1\nmatrix: {panel_size: 32, panels: [{col: 0, row: 0}]}\nextra: {keep: me}\n"
                  "playlists: {demo: {items: [{media: a}]}}\n")
     cfg = config.load(str(p))
-    assert cfg["matrix"]["panel_size"] == 32 and cfg["matrix"]["pwm_bits"] == 8 and cfg["matrix"]["pwm_dither_bits"] == 2
+    assert cfg["matrix"]["panel_size"] == 32 and cfg["matrix"]["pwm_bits"] == 7 and cfg["matrix"]["limit_refresh_rate_hz"] == 100
     assert cfg["extra"] == {"keep": "me"}
     assert cfg["playlists"] == {"demo": {"items": [{"media": "a"}]}}  # not filled with defaults
     assert cfg["web"]["admin_password"] is None and cfg["schedule"]["quiet"]["max_brightness"] == 20

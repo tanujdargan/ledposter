@@ -5,9 +5,10 @@ matrix:
   hardware_mapping: adafruit-hat-pwm  # needs the GPIO4-GPIO18 bonnet mod; else adafruit-hat
   panel_size: 64
   gpio_slowdown: 2                    # raise if you see flicker/garbage, lower for refresh rate
-  pwm_bits: 8
-  pwm_dither_bits: 2                  # measured, Pi 3B + 6x 64x64: bits 8 + dither 2 = ~153Hz (bits 9, no dither = ~70Hz)
-  pwm_lsb_nanoseconds: 130            # shortest PWM pulse; 100 is a bit faster, dark tones less even
+  pwm_bits: 7                         # tuned on the real wall (Pi 3B, 6x 64x64, GPIO4-18 jumper)
+  pwm_dither_bits: 1                  # dither 2 flickered visibly in dim tones
+  pwm_lsb_nanoseconds: 100
+  limit_refresh_rate_hz: 100          # steady cap: unlimited it swings 103-155Hz under load, which flickers
   show_refresh_rate: false            # true prints refresh Hz to the terminal
   # Chain order: the first entry is the panel plugged into the bonnet.
   # col/row place it on the portrait grid (0,0 = top-left).

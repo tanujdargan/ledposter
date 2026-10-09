@@ -234,6 +234,7 @@ class MatrixSettings(BaseModel):
     pwm_bits: int = Field(ge=1, le=11)
     pwm_dither_bits: int = Field(0, ge=0, le=2, description="Time-dithers the lowest PWM bits: much higher refresh rate")
     pwm_lsb_nanoseconds: int = Field(130, ge=50, le=3000, description="Shortest PWM pulse; lower = faster refresh, less even dark tones")
+    limit_refresh_rate_hz: int = Field(0, ge=0, le=500, description="Steady refresh cap (0 = off); an uneven refresh rate flickers")
     panels: list[Panel] = Field(min_length=1, max_length=16, description="Chain order; first is on the bonnet")
 
 
