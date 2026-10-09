@@ -14,12 +14,13 @@ matrix:
   # col/row place it on the portrait grid (0,0 = top-left).
   # rotate: how far that panel is physically turned clockwise (0/90/180/270).
   panels:
-    - {col: 0, row: 0}  # 1 top-left
-    - {col: 1, row: 0}  # 2 top-right
-    - {col: 1, row: 1}  # 3 middle-right
-    - {col: 0, row: 1}  # 4 middle-left
-    - {col: 0, row: 2}  # 5 bottom-left
-    - {col: 1, row: 2}  # 6 bottom-right
+    # rotate: as mounted on this wall (set with the panel-id pattern, Oct 2026)
+    - {col: 0, row: 0, rotate: 0}    # 1 top-left
+    - {col: 1, row: 0, rotate: 0}    # 2 top-right
+    - {col: 1, row: 1, rotate: 180}  # 3 middle-right
+    - {col: 0, row: 1, rotate: 90}   # 4 middle-left
+    - {col: 0, row: 2, rotate: 0}    # 5 bottom-left
+    - {col: 1, row: 2, rotate: 90}   # 6 bottom-right
 
 power:
   ceiling_amps: 13.0               # frames are scaled down to never exceed this (15 max: the supply)
