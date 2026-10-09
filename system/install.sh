@@ -1,21 +1,27 @@
 #!/bin/bash
-# Sets up a fresh Raspberry Pi (Raspberry Pi OS Lite 64-bit Bookworm, Pi 3B) as the LED wall,
-# from a checkout of this repo (milestone 8). Idempotent: run it again after pulling to
-# re-apply system files or rebuild. Usage (README: Install):
+# Sets up a fresh Raspberry Pi (Raspberry Pi OS Lite 64-bit, Pi 3B) as the LED wall, from a
+# checkout of this repo (milestone 8). Idempotent: run it again after pulling to re-apply
+# system files or rebuild. Usage (README: Install):
 #
 #   git clone --recurse-submodules git@github.com:tanujdargan/ledposter.git && cd ledposter
-#   sudo ./system/install.sh [--ssh-key "ssh-ed25519 AAAA..."] [--ssh key-only|disabled]
-#                            [--hostname ledposter] [--no-overlay] [--data-dir PATH]
-#                            [--force-build] [--dry-run]
+#   sudo ./system/install.sh [--prebuilt TARBALL] [--ssh-key "ssh-ed25519 AAAA..."]
+#                            [--ssh key-only|disabled] [--hostname ledposter] [--no-overlay]
+#                            [--data-dir PATH] [--force-build] [--dry-run]
 #
-# What it does, in order: apt packages, the ledwall and ledwall-build users, the /data
-# partition (or --data-dir), the release under /data/app (engine build + venv, built as
-# ledwall-build, owned by root), the data files (config, setup password), system files (units,
-# polkit, avahi, dnsmasq, journald, NetworkManager, apt), persistence of Wi-Fi profiles across
-# the overlay, hostname, boot config (audio off, isolcpus=3, I2C), services, firewall, SSH mode,
-# and last the read-only overlay (needs a reboot). --dry-run prints every action without doing
-# it. Never locks you out: SSH is left as it is until the end and the resulting mode is printed;
-# over SSH without a key it refuses unless --ssh is given. The login user is never changed.
+# --prebuilt (recommended; tools/deploy.sh runs all of it from your computer) unpacks a release
+# made by tools/build-release.sh, checked against TARBALL.sha256 when that file is next to it:
+# nothing is compiled on the Pi and the build packages are not installed. Without it the Pi
+# builds the engine and the venv itself (slow, heavy on a Pi 3B: the fallback).
+#
+# What it does, in order: apt packages, the service user ledwall and the build user
+# ledwall-build, the /data partition (or --data-dir), the release under /data/app (unpacked,
+# or built as ledwall-build; owned by root), the data files (config, setup password), system
+# files (units, polkit, avahi, dnsmasq, journald, NetworkManager, apt, sysctl),
+# persistence of Wi-Fi profiles across the overlay, hostname, boot config (audio off,
+# isolcpus=3, I2C), services, firewall, SSH mode, and last the read-only
+# overlay (needs a reboot). --dry-run prints every action without doing it. Never locks you
+# out: SSH is left as it is until the end and the resulting mode is printed; over SSH without
+# a key it refuses unless --ssh is given. The login user you run it as is never changed.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,15 +33,15 @@ SSH_MODE=
 NO_OVERLAY=0
 FORCE_BUILD=0
 DRY=0
+PREBUILT=
 # The unprivileged accounts. Not "ledposter": that is a likely name for the Pi's login user (in
 # group sudo), and these names get the polkit grants and own the app's files (docs/DEVIATIONS.md).
 SVC_USER=ledwall
 BUILD_USER=ledwall-build  # compiles and pip-installs releases; owns nothing that root runs
-# The one place the apt list lives. overlayroot is what raspi-config's overlay uses on
-# current Bookworm; older raspi-config builds do not need it and apt skips what it lacks.
-PACKAGES="git build-essential libyaml-cpp-dev nlohmann-json3-dev ffmpeg python3 python3-venv python3-pip
-  python3-numpy avahi-daemon network-manager ufw unattended-upgrades polkitd curl i2c-tools jq openssh-client"
-OPTIONAL_PACKAGES="overlayroot socat"
+# RUNTIME_PACKAGES, RUNTIME_LIBS, BUILD_PACKAGES, OPTIONAL_PACKAGES: the one apt list, shared
+# with tools/build-release.sh.
+# shellcheck source-path=SCRIPTDIR source=packages.sh disable=SC1091
+. "$SRC/system/packages.sh"
 # Not needed on a headless wall; each one costs boot time or writes to the card.
 DISABLE_UNITS="bluetooth.service hciuart.service triggerhappy.service ModemManager.service apt-daily.timer
   apt-daily-upgrade.timer man-db.timer dphys-swapfile.service e2scrub_all.timer"
@@ -43,10 +49,11 @@ ENABLE_UNITS="ledposter-boot.service ledposter-engine.service ledposter-web.serv
   ledposter-ssh.service ledposter-update.service ledposter-maintenance.timer ledposter-maintenance-resume.service
   ledposter-net-rollback.service avahi-daemon.service NetworkManager.service"
 
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --prebuilt) PREBUILT="$2"; shift 2 ;;
     --ssh-key) SSH_KEY="$2"; shift 2 ;;
     --ssh) SSH_MODE="$2"; shift 2 ;;
     --hostname) WANT_HOSTNAME="$2"; shift 2 ;;
@@ -91,8 +98,11 @@ owned_dir() {  # owner mode path
   run chown "$1" "$3"
   run chmod "$2" "$3"
 }
-as_build() { run runuser -u "$BUILD_USER" -- env HOME="$DATA/app/build" PIP_CACHE_DIR="$DATA/app/build/pip-cache" LANG=C.UTF-8 "$@"; }
+# The on-Pi build (no --prebuilt): one compile job, lowest CPU priority, no pip cache, so a Pi 3B
+# on a weak supply is not pushed out of memory (same limits as web/ledposter/updater.py).
+as_build() { run runuser -u "$BUILD_USER" -- env HOME="$DATA/app/build" MAKEFLAGS=-j1 LANG=C.UTF-8 nice -n 19 "$@"; }
 have() { command -v "$1" > /dev/null 2>&1; }
+sha256_of() { if have sha256sum; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 have_systemd() { [ -d /run/systemd/system ]; }
 is_pi() { [ -f /boot/firmware/config.txt ] && have raspi-config; }
 in_file() { [ -f "$2" ] && grep -qF -- "$1" "$2"; }
@@ -147,9 +157,31 @@ for u in "$SVC_USER" "$BUILD_USER"; do
   (from another login), then run the installer again."
   fi
 done
+if [ -n "$PREBUILT" ]; then
+  [ -f "$PREBUILT" ] || die "--prebuilt $PREBUILT: no such file"
+  PREBUILT="$(cd "$(dirname "$PREBUILT")" && pwd)/$(basename "$PREBUILT")"
+  case "$(basename "$PREBUILT")" in
+    ledposter-*-arm64.tar.zst | ledposter-*-arm64.tar.gz) ;;
+    *) die "--prebuilt expects ledposter-<version>-arm64.tar.zst (or .tar.gz) from tools/build-release.sh" ;;
+  esac
+  PREBUILT_VERSION="$(basename "$PREBUILT")"
+  PREBUILT_VERSION="${PREBUILT_VERSION#ledposter-}"
+  PREBUILT_VERSION="${PREBUILT_VERSION%-arm64.tar.*}"
+  # The system files come from this checkout and the release from the tarball: same version.
+  [ "$PREBUILT_VERSION" = "$VERSION" ] || die "$PREBUILT is release $PREBUILT_VERSION but this checkout is $VERSION.
+  Check out $PREBUILT_VERSION here (tools/deploy.sh sends a matching checkout), or build the tarball for this checkout."
+  if [ -f "$PREBUILT.sha256" ]; then
+    want="$(cut -d' ' -f1 < "$PREBUILT.sha256")"
+    [ "$want" = "$(sha256_of "$PREBUILT")" ] || die "$PREBUILT does not match $PREBUILT.sha256 (truncated or corrupted copy?)"
+  else
+    warn "no $PREBUILT.sha256 next to $PREBUILT: the tarball is not verified"
+  fi
+  if [ "$DRY" = 0 ] && [ "$(uname -m)" != aarch64 ]; then die "--prebuilt releases are arm64; this machine is $(uname -m)"; fi
+fi
 
 log "ledposter installer: $VERSION from $SRC -> $DATA (hostname $WANT_HOSTNAME, ssh $SSH_MODE, overlay $([ "$NO_OVERLAY" = 1 ] && echo off || echo on))"
 [ "$DRY" = 1 ] && note "dry run: nothing is changed"
+[ -n "$PREBUILT" ] && note "release: prebuilt $PREBUILT$([ -f "$PREBUILT.sha256" ] && echo " (sha256 ok)")"
 case "$VERSION" in *-dirty) warn "the checkout has uncommitted changes; the release is built from HEAD, not the working tree" ;; esac
 
 # -- steps ----------------------------------------------------------------------------
@@ -157,13 +189,14 @@ case "$VERSION" in *-dirty) warn "the checkout has uncommitted changes; the rele
 step_apt() {
   log "Packages"
   if ! have apt-get; then note "no apt-get: skipping"; return; fi
-  local optional=""
-  for p in $OPTIONAL_PACKAGES; do
+  local optional="" build="$BUILD_PACKAGES"
+  if [ -n "$PREBUILT" ]; then build=""; note "prebuilt release: not installing the build packages ($BUILD_PACKAGES)"; fi
+  run env DEBIAN_FRONTEND=noninteractive apt-get update -q
+  for p in $RUNTIME_LIBS $OPTIONAL_PACKAGES; do  # after the update: apt-cache only knows what the lists have
     if [ "$DRY" = 1 ] || apt-cache show "$p" > /dev/null 2>&1; then optional="$optional $p"; fi
   done
-  run env DEBIAN_FRONTEND=noninteractive apt-get update -q
   # shellcheck disable=SC2086  # word splitting of the package list is the point
-  run env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $PACKAGES $optional
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $RUNTIME_PACKAGES $build $optional
 }
 
 step_user() {
@@ -246,14 +279,42 @@ step_data() {
 step_release() {
   log "Release $VERSION under $DATA/app"
   # /data/app is root's: the engine runs from it as root, so the web app (user ledwall) may
-  # read and execute but never write here. make/venv/pip run as ledwall-build in the release
-  # dir, which root then takes over (same as web/ledposter/updater.py; docs/DEVIATIONS.md).
+  # read and execute but never write here. A prebuilt release is unpacked by root; otherwise
+  # make/venv/pip run as ledwall-build in the release dir, which root then takes over (same as
+  # web/ledposter/updater.py; docs/DEVIATIONS.md). Either way: root:root, then `.ready`.
   owned_dir root:root 755 "$DATA/app"
   owned_dir root:root 755 "$DATA/app/releases"
   owned_dir "$BUILD_USER:$BUILD_USER" 700 "$DATA/app/build"
   run rm -rf "$DATA/app/pip-cache"  # m8 kept the pip cache here, owned by its service user
   if [ -f "$REL/.ready" ] && [ "$FORCE_BUILD" = 0 ]; then
-    note "already built (use --force-build to rebuild)"
+    note "already installed (use --force-build to replace it)"
+  elif [ -n "$PREBUILT" ]; then
+    # Unpacked next to the releases (same filesystem) and moved into place, so a half-unpacked
+    # tree never has the release's name. GNU tar keeps entries under the extraction dir.
+    local tmp="$DATA/app/releases/.unpack-$VERSION"
+    note "unpacking the prebuilt release: nothing is compiled on this machine"
+    run rm -rf "$REL" "$tmp"
+    owned_dir root:root 700 "$tmp"
+    run tar -C "$tmp" --no-same-owner -xf "$PREBUILT"
+    if [ "$DRY" = 0 ]; then
+      local top
+      top="$(find "$tmp" -mindepth 1 -maxdepth 1 -printf '%f ')"
+      [ "$top" = "$VERSION " ] || die "$PREBUILT must hold exactly one directory, $VERSION/; it has: $top"
+    fi
+    run mv "$tmp/$VERSION" "$REL"
+    run rmdir "$tmp"
+    run chown -R root:root "$REL"
+    if [ "$DRY" = 0 ]; then
+      # Built on debian:trixie arm64: the venv needs the same Python minor version, the engine its libraries.
+      local want have_py missing
+      want="$(sed -n 's/^version *= *\([0-9]*\.[0-9]*\).*/\1/p' "$REL/web/.venv/pyvenv.cfg")"
+      have_py="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+      [ "$want" = "$have_py" ] || die "the prebuilt venv is for Python $want, this system has $have_py (build the release on the matching Debian, or drop --prebuilt)"
+      missing="$(ldd "$REL/engine/ledengine" | grep 'not found' || true)"
+      [ -z "$missing" ] || die "the prebuilt engine is missing libraries: $missing"
+      "$REL/web/.venv/bin/python" -I -c 'import fastapi, uvicorn, yaml, numpy' || die "the prebuilt venv does not import its packages"
+    fi
+    run touch "$REL/.ready"
   else
     run rm -rf "$REL"
     run git clone -q "$SRC" "$REL"
@@ -265,11 +326,11 @@ step_release() {
     else
       run git -C "$REL" submodule update --init
     fi
-    note "building the engine as $BUILD_USER (a few minutes on a Pi 3B)"
+    note "building the engine as $BUILD_USER (many minutes on a Pi 3B; tools/deploy.sh avoids this)"
     run chown -R "$BUILD_USER:$BUILD_USER" "$REL"
-    as_build make -C "$REL/engine" -j2
+    as_build make -C "$REL/engine"
     as_build python3 -m venv --system-site-packages "$REL/web/.venv"
-    as_build "$REL/web/.venv/bin/pip" install -q --retries 5 --timeout 60 -r "$REL/web/requirements.txt"
+    as_build "$REL/web/.venv/bin/pip" install -q --no-cache-dir --retries 5 --timeout 60 -r "$REL/web/requirements.txt"
     as_build make -C "$REL/engine" test
     run chown -R root:root "$REL"
     run touch "$REL/.ready"
