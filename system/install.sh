@@ -150,10 +150,18 @@ if [ -n "$DATA_DIR_OPT" ] && [ "$NO_OVERLAY" = 0 ] && ! { have findmnt && findmn
 fi
 # The release is named after the checkout (`git describe`). A fresh Raspberry Pi OS Lite has no
 # git until step_apt installs it, so the name is settled in step_version, after the packages.
-# --no-optional-locks: as root, never rewrite the index of a checkout the login user owns.
+# `describe --dirty` refreshes and rewrites the index (even with --no-optional-locks): as root
+# that would make the login user's .git/index root's. So it works on a private copy.
 checkout_version() {
-  local v
-  v="$(git --no-optional-locks -C "$SRC" describe --tags --always --dirty 2> /dev/null || echo dev)"
+  local v idx tmp
+  idx="$(git -C "$SRC" rev-parse --path-format=absolute --git-path index 2> /dev/null || true)"
+  tmp="$(mktemp)"
+  if [ -n "$idx" ] && cp "$idx" "$tmp" 2> /dev/null; then
+    v="$(GIT_INDEX_FILE="$tmp" git -C "$SRC" describe --tags --always --dirty 2> /dev/null || echo dev)"
+  else
+    v=dev
+  fi
+  rm -f "$tmp" "$tmp.lock"
   echo "${v//\//-}"
 }
 VERSION="$(if have git; then checkout_version; else echo "(named after the packages are installed)"; fi)"
