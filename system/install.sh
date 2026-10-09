@@ -118,6 +118,14 @@ install_unit() {
     sed "s#/data#$DATA#g" "$1" > "$dst" && chmod 644 "$dst"
   fi
 }
+# The system files come from this checkout and the release from the --prebuilt tarball: they
+# must be the same version.
+same_version() {
+  local v
+  v="$(checkout_version)"
+  [ "$PREBUILT_VERSION" = "$v" ] || die "$PREBUILT is release $PREBUILT_VERSION but this checkout is $v.
+  Check out $PREBUILT_VERSION here (tools/deploy.sh sends a matching checkout), or build the tarball for this checkout."
+}
 
 # -- preflight ------------------------------------------------------------------------
 
@@ -140,9 +148,16 @@ if [ -n "$DATA_DIR_OPT" ] && [ "$NO_OVERLAY" = 0 ] && ! { have findmnt && findmn
   warn "$DATA is a directory on the root filesystem: with the overlay on it would vanish at reboot. Implying --no-overlay."
   NO_OVERLAY=1
 fi
-VERSION="$(git -C "$SRC" describe --tags --always --dirty 2> /dev/null || echo dev)"
-VERSION="${VERSION//\//-}"
-REL="$DATA/app/releases/$VERSION"
+# The release is named after the checkout (`git describe`). A fresh Raspberry Pi OS Lite has no
+# git until step_apt installs it, so the name is settled in step_version, after the packages.
+# --no-optional-locks: as root, never rewrite the index of a checkout the login user owns.
+checkout_version() {
+  local v
+  v="$(git --no-optional-locks -C "$SRC" describe --tags --always --dirty 2> /dev/null || echo dev)"
+  echo "${v//\//-}"
+}
+VERSION="$(if have git; then checkout_version; else echo "(named after the packages are installed)"; fi)"
+REL=
 # The service and build accounts are system users this script makes; never a person's login.
 # (The login user, often called ledposter, is only read: its authorized_keys, above.)
 for u in "$SVC_USER" "$BUILD_USER"; do
@@ -167,9 +182,7 @@ if [ -n "$PREBUILT" ]; then
   PREBUILT_VERSION="$(basename "$PREBUILT")"
   PREBUILT_VERSION="${PREBUILT_VERSION#ledposter-}"
   PREBUILT_VERSION="${PREBUILT_VERSION%-arm64.tar.*}"
-  # The system files come from this checkout and the release from the tarball: same version.
-  [ "$PREBUILT_VERSION" = "$VERSION" ] || die "$PREBUILT is release $PREBUILT_VERSION but this checkout is $VERSION.
-  Check out $PREBUILT_VERSION here (tools/deploy.sh sends a matching checkout), or build the tarball for this checkout."
+  if have git; then same_version; fi  # else after step_apt
   if [ -f "$PREBUILT.sha256" ]; then
     want="$(cut -d' ' -f1 < "$PREBUILT.sha256")"
     [ "$want" = "$(sha256_of "$PREBUILT")" ] || die "$PREBUILT does not match $PREBUILT.sha256 (truncated or corrupted copy?)"
@@ -182,9 +195,17 @@ fi
 log "ledposter installer: $VERSION from $SRC -> $DATA (hostname $WANT_HOSTNAME, ssh $SSH_MODE, overlay $([ "$NO_OVERLAY" = 1 ] && echo off || echo on))"
 [ "$DRY" = 1 ] && note "dry run: nothing is changed"
 [ -n "$PREBUILT" ] && note "release: prebuilt $PREBUILT$([ -f "$PREBUILT.sha256" ] && echo " (sha256 ok)")"
-case "$VERSION" in *-dirty) warn "the checkout has uncommitted changes; the release is built from HEAD, not the working tree" ;; esac
 
 # -- steps ----------------------------------------------------------------------------
+
+step_version() {
+  VERSION="$(checkout_version)"
+  REL="$DATA/app/releases/$VERSION"
+  log "Release name: $VERSION"
+  case "$VERSION" in *-dirty) warn "the checkout has uncommitted changes; the release is built from HEAD, not the working tree" ;; esac
+  if [ -n "$PREBUILT" ]; then same_version; fi
+  return 0
+}
 
 step_apt() {
   log "Packages"
@@ -551,6 +572,7 @@ EOF
 }
 
 step_apt
+step_version
 step_user
 step_data
 step_release
