@@ -5,3 +5,7 @@ web/.venv/
 __pycache__/
 .pytest_cache/
 dist/
+# art pack: rendered output, download cache, and personal (copyrighted) media never go in the repo
+art/out/
+art/.cache/
+art/personal/

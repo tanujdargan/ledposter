@@ -1,0 +1,125 @@
+{
+  "about": "Public-domain paintings and prints for the Gallery playlist. frame = [cx, cy, h]: centre of the 2:3 portrait crop as fractions of the image, and its height as a fraction of the image height (1 = as tall as fits). build.py --paintings turns it into a pixel crop for the downloaded image. Uploaded with filter=smooth, scale=fill.",
+  "paintings": [
+    {
+      "slug": "great-wave",
+      "title": "The Great Wave off Kanagawa",
+      "artist": "Katsushika Hokusai",
+      "year": "c. 1830-32",
+      "licence": "CC0 1.0 (The Met Open Access, public domain)",
+      "source_page": "https://www.metmuseum.org/art/collection/search/45434",
+      "image_url": "https://images.metmuseum.org/CRDImages/as/web-large/DP130155.jpg",
+      "frame": [0.3, 0.5, 1.0]
+    },
+    {
+      "slug": "starry-night",
+      "title": "The Starry Night",
+      "artist": "Vincent van Gogh",
+      "year": "1889",
+      "licence": "Public domain (PD-Art; Wikimedia Commons)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ea/Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg/1280px-Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg",
+      "frame": [0.33, 0.5, 1.0]
+    },
+    {
+      "slug": "pearl-earring",
+      "title": "Girl with a Pearl Earring",
+      "artist": "Johannes Vermeer",
+      "year": "c. 1665",
+      "licence": "Public domain (PD-Art; Wikimedia Commons, Mauritshuis)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Meisje_met_de_parel.jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d7/Meisje_met_de_parel.jpg/1280px-Meisje_met_de_parel.jpg",
+      "frame": [0.45, 0.55, 0.8]
+    },
+    {
+      "slug": "wheat-field-cypresses",
+      "title": "Wheat Field with Cypresses",
+      "artist": "Vincent van Gogh",
+      "year": "1889",
+      "licence": "CC0 1.0 (The Met Open Access, public domain)",
+      "source_page": "https://www.metmuseum.org/art/collection/search/436535",
+      "image_url": "https://images.metmuseum.org/CRDImages/ep/web-large/DP-42549-001.jpg",
+      "frame": [0.68, 0.46, 0.9]
+    },
+    {
+      "slug": "the-kiss",
+      "title": "The Kiss",
+      "artist": "Gustav Klimt",
+      "year": "1907-08",
+      "licence": "Public domain (PD-Art; Wikimedia Commons, Belvedere Vienna)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:The_Kiss_-_Gustav_Klimt_-_Google_Cultural_Institute.jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/40/The_Kiss_-_Gustav_Klimt_-_Google_Cultural_Institute.jpg/1280px-The_Kiss_-_Gustav_Klimt_-_Google_Cultural_Institute.jpg",
+      "frame": [0.5, 0.42, 0.8]
+    },
+    {
+      "slug": "water-lilies",
+      "title": "Water Lilies",
+      "artist": "Claude Monet",
+      "year": "1906",
+      "licence": "Public domain (PD-Art; Wikimedia Commons, Art Institute of Chicago)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Claude_Monet_-_Water_Lilies_-_1906,_Ryerson.jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/aa/Claude_Monet_-_Water_Lilies_-_1906%2C_Ryerson.jpg/1280px-Claude_Monet_-_Water_Lilies_-_1906%2C_Ryerson.jpg",
+      "frame": [0.5, 0.5, 1.0]
+    },
+    {
+      "slug": "fireworks-ryogoku",
+      "title": "Fireworks at Ryogoku",
+      "artist": "Utagawa Hiroshige",
+      "year": "1858",
+      "licence": "Public domain (Wikimedia Commons, Brooklyn Museum)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Fireworks_at_Ryogoku_(Ryogoku_Hanabi),_No._98_from_One_Hundred_Famous_Views_of_Edo.jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/e/e3/Fireworks_at_Ryogoku_%28Ryogoku_Hanabi%29%2C_No._98_from_One_Hundred_Famous_Views_of_Edo.jpg",
+      "frame": [0.5, 0.5, 0.9]
+    },
+    {
+      "slug": "sudden-shower",
+      "title": "Sudden Shower over Shin-Ohashi Bridge and Atake",
+      "artist": "Utagawa Hiroshige",
+      "year": "1857",
+      "licence": "CC0 1.0 (The Met Open Access via Wikimedia Commons)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:%C5%8Chashi_Atake_no_y%C5%ABdachi-%E5%90%8D%E6%89%80%E6%B1%9F%E6%88%B8%E7%99%BE%E6%99%AF_%E5%A4%A7%E3%81%AF%E3%81%97%E3%81%82%E3%81%9F%E3%81%91%E3%81%AE%E5%A4%95%E7%AB%8B-Sudden_Shower_over_Shin-%C5%8Chashi_Bridge_and_Atake_(%C5%8Chashi_Atake_no_y%C5%ABdachi),_from_the_series_One_Hundred_Famous_Views_of_Edo_(Meisho_Edo_hyakkei)_MET_DP123602.jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/18/%C5%8Chashi_Atake_no_y%C5%ABdachi-%E5%90%8D%E6%89%80%E6%B1%9F%E6%88%B8%E7%99%BE%E6%99%AF_%E5%A4%A7%E3%81%AF%E3%81%97%E3%81%82%E3%81%9F%E3%81%91%E3%81%AE%E5%A4%95%E7%AB%8B-Sudden_Shower_over_Shin-%C5%8Chashi_Bridge_and_Atake_%28%C5%8Chashi_Atake_no_y%C5%ABdachi%29%2C_from_the_series_One_Hundred_Famous_Views_of_Edo_%28Meisho_Edo_hyakkei%29_MET_DP123602.jpg/1280px-thumbnail.jpg",
+      "frame": [0.5, 0.5, 0.92]
+    },
+    {
+      "slug": "cafe-terrace",
+      "title": "Cafe Terrace at Night",
+      "artist": "Vincent van Gogh",
+      "year": "1888",
+      "licence": "Public domain (PD-Art; Wikimedia Commons, Kroller-Muller Museum)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Vincent_Willem_van_Gogh_-_Cafe_Terrace_at_Night_(Yorck).jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/21/Vincent_Willem_van_Gogh_-_Cafe_Terrace_at_Night_%28Yorck%29.jpg/1280px-Vincent_Willem_van_Gogh_-_Cafe_Terrace_at_Night_%28Yorck%29.jpg",
+      "frame": [0.45, 0.5, 1.0]
+    },
+    {
+      "slug": "red-fuji",
+      "title": "Fine Wind, Clear Morning (Red Fuji)",
+      "artist": "Katsushika Hokusai",
+      "year": "c. 1830-32",
+      "licence": "Public domain (PD-Art; Wikimedia Commons)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Katsushika_Hokusai_-_Fine_Wind,_Clear_Morning_(Gaif%C5%AB_kaisei)_-_Google_Art_Project.jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Katsushika_Hokusai_-_Fine_Wind%2C_Clear_Morning_%28Gaif%C5%AB_kaisei%29_-_Google_Art_Project.jpg/1280px-Katsushika_Hokusai_-_Fine_Wind%2C_Clear_Morning_%28Gaif%C5%AB_kaisei%29_-_Google_Art_Project.jpg",
+      "frame": [0.66, 0.5, 1.0]
+    },
+    {
+      "slug": "sunflowers",
+      "title": "Sunflowers",
+      "artist": "Vincent van Gogh",
+      "year": "1888",
+      "licence": "Public domain (PD-Art; Wikimedia Commons, National Gallery London)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Vincent_van_Gogh_-_Sunflowers_(1888,_National_Gallery_London).jpg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fe/Vincent_van_Gogh_-_Sunflowers_%281888%2C_National_Gallery_London%29.jpg/1280px-Vincent_van_Gogh_-_Sunflowers_%281888%2C_National_Gallery_London%29.jpg",
+      "frame": [0.5, 0.47, 0.95]
+    },
+    {
+      "slug": "plum-garden",
+      "title": "Plum Garden at Kameido",
+      "artist": "Utagawa Hiroshige",
+      "year": "1857",
+      "licence": "Public domain (Rijksmuseum via Wikimedia Commons)",
+      "source_page": "https://commons.wikimedia.org/wiki/File:De_pruimenboomgaard_te_Kameido-Rijksmuseum_RP-P-1956-743.jpeg",
+      "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/De_pruimenboomgaard_te_Kameido-Rijksmuseum_RP-P-1956-743.jpeg/1280px-De_pruimenboomgaard_te_Kameido-Rijksmuseum_RP-P-1956-743.jpeg",
+      "frame": [0.5, 0.5, 0.93]
+    }
+  ]
+}
