@@ -367,6 +367,14 @@ step_release() {
     run chown -R root:root "$REL"
     run touch "$REL/.ready"
   fi
+  if [ "$DRY" = 0 ]; then
+    # Before it goes live: the service user must be able to run it (a release packed with a
+    # private umask once passed every root-side check and then failed as ledwall).
+    (cd "$REL/web" && runuser -u "$SVC_USER" -- ./.venv/bin/python -c 'import ledposter.app') \
+      || die "$SVC_USER cannot run the web app in $REL (permissions?); current is unchanged"
+    runuser -u "$SVC_USER" -- "$REL/engine/ledengine" --help 2>&1 | grep -q "usage: ledengine" \
+      || die "$SVC_USER cannot run $REL/engine/ledengine (permissions?); current is unchanged"
+  fi
   run ln -sfn "releases/$VERSION" "$DATA/app/.current.tmp"
   run mv -fT "$DATA/app/.current.tmp" "$DATA/app/current"
   # How the updater reaches the repo: the ssh form of this checkout's origin (deploy key).

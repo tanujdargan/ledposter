@@ -18,6 +18,7 @@
 # <that>.sha256. Install it with `sudo ./system/install.sh --prebuilt <tarball>` from a checkout
 # of the same version, or let tools/deploy.sh do both. --print-version only prints <version>.
 set -euo pipefail
+umask 022  # the caller's umask must not leak into the release (a 077 one made it unreadable to ledwall)
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TAG=HEAD
@@ -105,6 +106,9 @@ docker run --rm --platform "$PLATFORM" -v "$work/src:/src:ro" -v "$OUT:/out" \
     "$rel/web/.venv/bin/python" -m compileall -q -j 0 "$rel/web" > /dev/null
     help="$("$rel/engine/ledengine" --help 2>&1 || true)"  # usage on stderr, exit 2
     case "$help" in *"usage: ledengine"*) ;; *) echo "ledengine does not run: $help" >&2; exit 1 ;; esac
+    # Everyone may read and run the release (the wall runs it as ledwall); only root writes it.
+    # The checkout came from the host with its umask, so set this explicitly.
+    chmod -R u+rwX,go+rX,go-w "$rel"
     name="ledposter-$VERSION-arm64.tar"
     if command -v zstd > /dev/null; then
       tar -C /data/app/releases --numeric-owner --owner=0 --group=0 -cf - "$VERSION" | zstd -q -T0 -19 -o "/out/$name.zst"
