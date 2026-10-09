@@ -69,7 +69,7 @@ for f in "$OUT/ledposter-$VERSION-arm64.tar.zst" "$OUT/ledposter-$VERSION-arm64.
   if [ -f "$f" ] && [ -f "$f.sha256" ]; then tarball="$f"; break; fi
 done
 if [ -z "$tarball" ] || [ "$REBUILD" = 1 ]; then
-  "$REPO/tools/build-release.sh" --tag "$commit" --out "$OUT" "${DIRTY[@]}"
+  "$REPO/tools/build-release.sh" --tag "$commit" --out "$OUT" ${DIRTY[@]+"${DIRTY[@]}"}
   tarball="$OUT/ledposter-$VERSION-arm64.tar.zst"
   [ -f "$tarball" ] || tarball="$OUT/ledposter-$VERSION-arm64.tar.gz"
 else
