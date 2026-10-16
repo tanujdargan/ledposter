@@ -148,6 +148,9 @@ PermitRootLogin no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/ledposter_authorized_keys
 EOF
+    # ssh.service is disabled, so at boot nothing has made its RuntimeDirectory yet, and
+    # OpenSSH 10 (trixie) fails `sshd -t` without it: SSH would stay off after every reboot.
+    install -d -m 0755 /run/sshd
     sshd -t || { rm -f /etc/ssh/sshd_config.d/10-ledposter.conf; die "sshd rejected the config; drop-in removed"; }
     systemctl reload-or-restart ssh.service
     say "ssh: key-only, $(printf '%s\n' "$keys" | grep -c .) key(s)"
