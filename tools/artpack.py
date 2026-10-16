@@ -33,9 +33,11 @@ PLAYLISTS = [  # name, categories, seconds per item, shuffle
     ("Gallery", ("painting",), 20, False),
     ("Pixel Scenes", ("scene",), 18, False),
     ("Ambient", ("ambient",), 30, True),
-    ("Everything", ("painting", "scene", "ambient"), None, True),
+    ("Fun", ("fun",), 18, True),
+    ("Claude", ("claude",), 18, False),
+    ("Everything", ("painting", "scene", "ambient", "fun", "claude"), None, True),
 ]
-SECONDS = {"painting": 20, "scene": 18, "ambient": 30, "personal": 15}
+SECONDS = {"painting": 20, "scene": 18, "ambient": 30, "fun": 18, "claude": 18, "personal": 15}
 
 
 class ApiError(Exception):

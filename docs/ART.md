@@ -6,6 +6,8 @@ A set of original pixel scenes and generative loops drawn at the wall's native 1
 art/build.py          render the pieces / download the paintings / build personal media
 art/scenes.py         pixel scenes (flat palettes, lossless GIF)
 art/ambient.py        generative pieces (lossless RGB H.264)
+art/fun.py            fun pixel pieces: pong, block drop, cat nap, pizza, rocket... (lossless GIF)
+art/claude.py         Claude spark and Clawd pieces (lossless GIF)
 art/lib.py            shared helpers: canvas, drawing, loopable noise, 3x5 font, encoder, wall checks
 art/paintings.json    the paintings: URL, title, artist, year, licence, source page, crop
 art/personal.py       optional: your own images/GIFs/clips -> native 128x192 loops
@@ -32,6 +34,8 @@ Create the token in the web app under Settings > API tokens. `artpack.py` upload
 | Gallery | the paintings | 20 s |
 | Pixel Scenes | the pixel scenes | 18 s |
 | Ambient | the generative pieces, shuffled | 30 s |
+| Fun | the fun pieces (art/fun.py), shuffled | 18 s |
+| Claude | the Claude pieces (art/claude.py) | 18 s |
 | Everything | all of the above, shuffled | as above |
 
 You can run it again safely. It reuses existing items and rewrites the playlists with the same content. It re-uploads an item only if its previous transcode failed. To refresh a piece after changing its code, delete it in the web app's library and run `artpack.py` again.
