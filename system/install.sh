@@ -249,8 +249,9 @@ partition labelled 'ledpostdata'. Raspberry Pi OS grows the root partition to fi
 its first boot, so on a card that has booted once this is expected. Options:
 
   a) Fresh card (recommended): flash it again and BEFORE the first boot open cmdline.txt on the
-     boot partition (bootfs) from your computer and delete the text
-         init=/usr/lib/raspi-config/init_resize.sh
+     boot partition (bootfs) from your computer and delete the word
+         resize
+     (Trixie; on older images the text init=/usr/lib/raspi-config/init_resize.sh instead)
      The root then stays about 5GB; boot, run this installer, and it creates the data
      partition in the free space (everything big lives on /data).
   b) This card: shrink the root partition from another computer (gparted), leaving at least
