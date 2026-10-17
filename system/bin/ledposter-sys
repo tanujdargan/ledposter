@@ -186,9 +186,31 @@ layout() {
   user_dir "$data/logs/web"
 }
 
+# Wi-Fi profiles live in $state/nm (bind-mounted on NetworkManager's dir). A power cut while NM
+# rewrites one leaves garbage and the wall boots with no Wi-Fi, so every good profile is copied
+# to $state/nm-backup at boot and copied back when it is missing or garbled. Runs before NM.
+# ponytail: "good" = first line is [connection]; damage further in is not caught.
+nm_ok() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(head -n 1 "$1" 2> /dev/null)" = "[connection]" ]; }
+nm_guard() {
+  nm="$state/nm" bak="$state/nm-backup"
+  [ -d "$nm" ] && [ ! -L "$nm" ] || return 0
+  root_dir "$bak"
+  chmod 700 "$bak"  # profiles hold the Wi-Fi password
+  for f in "$bak"/*.nmconnection; do
+    nm_ok "$f" || continue
+    n="$nm/$(basename "$f")"
+    if [ -L "$n" ]; then say "$n is a symlink; leaving it"; continue; fi
+    nm_ok "$n" || { say "Wi-Fi profile $(basename "$f") missing or garbled: restoring the backup"; cp -p "$f" "$n"; }
+  done
+  for f in "$nm"/*.nmconnection; do
+    if nm_ok "$f"; then cp -p "$f" "$bak/"; fi
+  done
+}
+
 boot() {
   if ! data_present; then say "$data is not there (unmounted?): nothing to restore"; exit 0; fi
   layout
+  nm_guard
   if [ -s "$state/hostname" ]; then
     name="$(head -n 1 "$state/hostname")"
     [ "$(hostname)" = "$name" ] || set_hostname "$name"
@@ -210,6 +232,7 @@ factory_reset() {
       if [ "$type" = "802-11-wireless" ]; then nmcli connection delete uuid "$uuid" > /dev/null 2>&1 || true; fi
     done
   fi
+  rm -rf "$state/nm-backup"  # or the next boot puts the deleted profiles back
   set_hostname ledposter || true
   # rm -r never follows symlinks, so whatever the app left here is only unlinked, not entered.
   for p in "$data"/* "$data"/.[!.]*; do

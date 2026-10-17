@@ -171,6 +171,27 @@ def test_layout_creates_only_what_is_missing_and_follows_nothing(world, tmp_path
     assert rc == 1 and "symlink" in out
 
 
+def test_boot_restores_a_missing_or_garbled_wifi_profile_from_backup(world, tmp_path):
+    nm, bak = world.data / "state" / "nm", world.data / "state" / "nm-backup"
+    nm.mkdir()
+    good = "[connection]\nid=SlowWifi\ntype=wifi\n"
+    (nm / "SlowWifi.nmconnection").write_text(good)
+    assert world.run("boot")[0] == 0
+    assert (bak / "SlowWifi.nmconnection").read_text() == good
+    assert stat.S_IMODE(os.stat(bak).st_mode) == 0o700
+    (nm / "SlowWifi.nmconnection").write_bytes(b"\xff\xfe garbage")  # power cut mid-write
+    rc, out = world.run("boot")
+    assert rc == 0 and "restoring" in out
+    assert (nm / "SlowWifi.nmconnection").read_text() == good
+    assert (bak / "SlowWifi.nmconnection").read_text() == good  # garbage never overwrites the backup
+    (nm / "SlowWifi.nmconnection").unlink()
+    assert world.run("boot")[0] == 0 and (nm / "SlowWifi.nmconnection").read_text() == good
+    (nm / "SlowWifi.nmconnection").unlink()
+    (nm / "SlowWifi.nmconnection").symlink_to(tmp_path / "elsewhere")
+    rc, out = world.run("boot")
+    assert rc == 0 and not (tmp_path / "elsewhere").exists()
+
+
 def test_service_accounts_are_ledwall_not_the_login_user():
     """The Pi's login user may well be called ledposter (and be in group sudo): no unit, polkit
     rule or root-side script may treat that name as the wall's unprivileged account."""
