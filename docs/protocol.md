@@ -257,7 +257,7 @@ One way, engine to client. Clients send nothing (anything sent is ignored; closi
 
 Read the line, parse `w` and `h` from it, then read exactly that many bytes. Repeat.
 
-- At most `engine.preview_fps` (default 15) messages a second, and only when the frame was redrawn, so a still picture sends about 10 a second.
+- At most `engine.preview_fps` (default 5: on a Pi 3B the Wi-Fi traffic of 15 stalled the panel refresh) messages a second, and only when the frame was redrawn.
 - A new client starts with the next frame.
 - Slow clients drop frames: while a client is still receiving a message, newer frames are skipped for it, and it then gets the newest one. A message is never cut short or interleaved. A client that stops reading never slows the engine or the other clients.
 - At most 8 preview clients; more are disconnected straight away. The web app should hold one connection and fan it out over its WebSocket.

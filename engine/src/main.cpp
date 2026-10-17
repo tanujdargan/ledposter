@@ -333,7 +333,7 @@ static Settings load_settings(YAML::Node cfg) {
   check(0 <= s.curve.min_pct && s.curve.min_pct <= s.curve.max_pct && s.curve.max_pct <= 100,
         "brightness.auto_curve: need 0 <= min_pct <= max_pct <= 100");
   s.smoothing_s = c["smoothing_s"].as<double>(3);
-  s.preview_fps = cfg["engine"]["preview_fps"].as<int>(15);
+  s.preview_fps = cfg["engine"]["preview_fps"].as<int>(5);
   check(s.preview_fps >= 1 && s.preview_fps <= 30, "engine.preview_fps must be 1 to 30");
   YAML::Node d = cfg["ddp"], e = cfg["e131"], sm = cfg["stream"];
   StreamConfig &t = s.stream;
