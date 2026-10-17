@@ -22,6 +22,7 @@ set -eu
 data="${LEDPOSTER_DATA:-/data}"
 state="$data/state"
 ssh_etc="${LEDPOSTER_SSH_ETC:-/etc/ssh}"  # overridden by the tests only
+cmdline="${LEDPOSTER_CMDLINE:-/boot/firmware/cmdline.txt}"  # likewise
 svc_user=ledwall
 # Mirrors ledposter.system.RULE_RE / KEY_RE / MAINT_RE: the only lines accepted from the app's files.
 rule_re='^(default (deny|allow) (incoming|outgoing)|logging off|allow [0-9]{1,5}/(tcp|udp)|allow in on [a-z0-9.-]{1,15} to any port [0-9]{1,5} proto (tcp|udp))$'
@@ -384,13 +385,33 @@ maintenance() {
   esac
 }
 
+# raspi-config writes plain `overlayroot=tmpfs`, which also overlays every fstab mount: /data
+# then lives in RAM and uploads and settings vanish at reboot. `:recurse=0` keeps /data the real
+# partition. raspi-config's disable only removes the exact `overlayroot=tmpfs `, so the suffix
+# comes off again before it runs. sed -E with (^| )..( |$): never touches another token.
+cmdline_edit() {
+  ro=no
+  if [ "$cmdline" = /boot/firmware/cmdline.txt ] && findmnt -no OPTIONS /boot/firmware 2> /dev/null | grep -Eq '(^|,)ro(,|$)'; then
+    ro=yes
+    mount -o remount,rw /boot/firmware
+  fi
+  sed -E "$1" "$cmdline" > "$cmdline.new" && cat "$cmdline.new" > "$cmdline"  # vfat: no rename-over
+  rm -f "$cmdline.new"
+  if [ "$ro" = yes ]; then mount -o remount,ro /boot/firmware || true; fi
+}
+
 # overlay on|off [keep]: `keep` leaves the overlay-wanted marker alone (the maintenance window
 # turns the overlay off temporarily; an admin turning it off means it).
 overlay() {
   command -v raspi-config > /dev/null || die "raspi-config not found (not Raspberry Pi OS?)"
   case "${1:-status}" in
-    on) raspi-config nonint enable_overlayfs && { root_dir "$state"; touch "$state/overlay-wanted"; } ;;
+    on)
+      raspi-config nonint enable_overlayfs
+      cmdline_edit 's/(^| )overlayroot=tmpfs( |$)/\1overlayroot=tmpfs:recurse=0\2/'
+      root_dir "$state"
+      touch "$state/overlay-wanted" ;;
     off)
+      cmdline_edit 's/(^| )overlayroot=tmpfs:recurse=0( |$)/\1overlayroot=tmpfs\2/'
       raspi-config nonint disable_overlayfs
       if [ "${2:-}" != keep ]; then rm -f "$state/overlay-wanted"; fi ;;
     status)

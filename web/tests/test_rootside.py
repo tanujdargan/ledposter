@@ -41,7 +41,8 @@ def world(tmp_path):
     (stubs / "ledposter-net").symlink_to(os.path.abspath(NET))
     etc_ssh = tmp_path / "etc-ssh"
     etc_ssh.mkdir()
-    env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", LEDPOSTER_DATA=str(data), LEDPOSTER_SSH_ETC=str(etc_ssh))
+    env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", LEDPOSTER_DATA=str(data), LEDPOSTER_SSH_ETC=str(etc_ssh),
+               LEDPOSTER_CMDLINE=str(tmp_path / "cmdline.txt"))
 
     def run(*argv, script=SYS):
         r = subprocess.run(["sh", script, *argv], env=env, capture_output=True, text=True, timeout=30)
@@ -251,6 +252,20 @@ def test_ssh_drop_in_is_validated_and_a_rejected_one_never_replaces_the_old(worl
     rc, out = world.run("ssh")
     assert rc == 1 and "PasswordAuthentication no" in conf.read_text() and "PermitRootLogin no" in conf.read_text()
     assert "/etc/ssh/ledposter_authorized_keys" in conf.read_text()  # the wall's keys still work
+
+
+def test_overlay_keeps_data_out_of_it_and_can_still_be_turned_off(world, tmp_path):
+    """raspi-config writes plain overlayroot=tmpfs (which overlays /data too, in RAM) and its
+    disable removes only that exact token."""
+    cmd = tmp_path / "cmdline.txt"
+    cmd.write_text("overlayroot=tmpfs console=tty1 root=PARTUUID=27b94958-02 rootwait")  # as raspi-config left it
+    assert world.run("overlay", "on")[0] == 0
+    assert cmd.read_text() == "overlayroot=tmpfs:recurse=0 console=tty1 root=PARTUUID=27b94958-02 rootwait"
+    assert world.run("overlay", "on")[0] == 0  # twice: no double suffix
+    assert cmd.read_text().count("recurse=0") == 1
+    assert world.run("overlay", "off")[0] == 0  # back to the exact token raspi-config removes
+    assert cmd.read_text() == "overlayroot=tmpfs console=tty1 root=PARTUUID=27b94958-02 rootwait"
+    assert not (tmp_path / "cmdline.txt.new").exists()
 
 
 def test_service_accounts_are_ledwall_not_the_login_user():
