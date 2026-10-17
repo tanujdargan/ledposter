@@ -643,6 +643,8 @@ async function loadSettings() { settings = await api("/api/settings"); }
 function bindSettings() {
   const m = settings.matrix, p = settings.power, q = settings.mqtt;
   $("#m-mapping").value = m.hardware_mapping; $("#m-size").value = m.panel_size; $("#m-slow").value = m.gpio_slowdown; $("#m-pwm").value = m.pwm_bits;
+  $("#m-dither").value = String(m.pwm_dither_bits); $("#m-lsb").value = m.pwm_lsb_nanoseconds;
+  showRefresh(m.limit_refresh_rate_hz || 260);
   $("#p-ceiling").value = p.ceiling_amps; $("#p-perpanel").value = p.amps_full_white_per_panel;
   $("#mq-enabled").checked = q.enabled; $("#mq-host").value = q.host; $("#mq-port").value = q.port; $("#mq-user").value = q.username; $("#mq-pass").value = q.password;
   $("#mq-tls").checked = q.tls;
@@ -661,10 +663,20 @@ function renderPanels() {
 $("#m-panel-add").onclick = () => { settings.matrix.panels.push({ col: 0, row: settings.matrix.panels.length, rotate: 0 }); renderPanels(); };
 $("#m-panel-del").onclick = () => { if (settings.matrix.panels.length > 1) { settings.matrix.panels.pop(); renderPanels(); } };
 async function putSettings(okMsg) {
-  try { const r = await api("/api/settings", { method: "PUT", body: settings }); settings = r; bindSettings(); toast(r.stream_error || (r.restart_required ? "Saved. Restart the engine to apply matrix options." : okMsg), !!r.stream_error); applyStatus(await api("/api/status")); }
+  try {
+    const r = await api("/api/settings", { method: "PUT", body: settings }); settings = r; bindSettings();
+    // Matrix options only apply when the engine starts: restart it here instead of telling the owner to.
+    if (r.restart_required && !r.stream_error) { await api("/api/system/restart", { method: "POST", body: { what: "engine" } }); toast(`${okMsg}. Applying (the wall goes dark for a few seconds)…`); }
+    else toast(r.stream_error || okMsg, !!r.stream_error);
+    setTimeout(async () => { try { applyStatus(await api("/api/status")); } catch {} }, 4000);
+  }
   catch (e) { toast(e.message, true); }
 }
-$("#matrix-save").onclick = () => { Object.assign(settings.matrix, { hardware_mapping: $("#m-mapping").value, panel_size: +$("#m-size").value, gpio_slowdown: +$("#m-slow").value, pwm_bits: +$("#m-pwm").value }); settings.power = { ceiling_amps: +$("#p-ceiling").value, amps_full_white_per_panel: +$("#p-perpanel").value }; putSettings("Saved"); };
+// 60..250 Hz in steps of 10; the far right (260) means no cap (limit_refresh_rate_hz 0).
+function showRefresh(v) { setSlider($("#refresh"), v, $("#hz-val"), v >= 260 ? "No cap" : `${v} Hz`); }
+$("#refresh").addEventListener("input", (e) => showRefresh(+e.target.value));
+$("#refresh").addEventListener("change", (e) => { const v = +e.target.value; settings.matrix.limit_refresh_rate_hz = v >= 260 ? 0 : v; putSettings(v >= 260 ? "Refresh uncapped" : `Refresh ${v} Hz`); });
+$("#matrix-save").onclick = () => { Object.assign(settings.matrix, { hardware_mapping: $("#m-mapping").value, panel_size: +$("#m-size").value, gpio_slowdown: +$("#m-slow").value, pwm_bits: +$("#m-pwm").value, pwm_dither_bits: +$("#m-dither").value, pwm_lsb_nanoseconds: +$("#m-lsb").value }); settings.power = { ceiling_amps: +$("#p-ceiling").value, amps_full_white_per_panel: +$("#p-perpanel").value }; putSettings("Saved"); };
 $("#integrations-save").onclick = () => {
   settings.mqtt = { enabled: $("#mq-enabled").checked, host: $("#mq-host").value.trim(), port: +$("#mq-port").value || 1883, username: $("#mq-user").value, password: $("#mq-pass").value, tls: $("#mq-tls").checked };
   settings.ddp = { enabled: $("#ddp-enabled").checked };

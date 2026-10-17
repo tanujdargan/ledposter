@@ -1,3 +1,4 @@
+import os
 import time
 
 import yaml
@@ -81,6 +82,26 @@ def test_schedule_api_and_quiet_cap(authed, engine, data):
     assert [c["cmd"] for c in engine.calls[-2:]] == ["reload_config", "set_brightness"] and engine.calls[-1]["value"] == 25
     time.sleep(2.2)
     assert yaml.safe_load((data / "config.yaml").read_text())["brightness"]["user"] == 90
+
+
+def test_refresh_slider_saves_the_cap_and_keeps_unlisted_matrix_keys(authed, engine, data):
+    """The Settings slider sends limit_refresh_rate_hz (0 = no cap) and dithering through PUT;
+    keys the form doesn't show (disable_busy_waiting) must survive the save."""
+    path = data / "config.yaml"
+    cfg = yaml.safe_load(path.read_text())
+    cfg["matrix"]["disable_busy_waiting"] = True
+    path.write_text(yaml.safe_dump(cfg))
+    old = time.time() - 5
+    os.utime(path, (old, old))  # an old hand edit: the app reloads it
+    s = authed.get("/api/settings").json()
+    s["matrix"].update(limit_refresh_rate_hz=130, pwm_dither_bits=2, pwm_lsb_nanoseconds=100)
+    r = authed.put("/api/settings", json=s)
+    assert r.status_code == 200 and r.json()["restart_required"] is True
+    m = yaml.safe_load(path.read_text())["matrix"]
+    assert (m["limit_refresh_rate_hz"], m["pwm_dither_bits"], m["disable_busy_waiting"]) == (130, 2, True)
+    s["matrix"]["limit_refresh_rate_hz"] = 0  # "No cap"
+    assert authed.put("/api/settings", json=s).status_code == 200
+    assert yaml.safe_load(path.read_text())["matrix"]["limit_refresh_rate_hz"] == 0
 
 
 def test_settings_roundtrip(authed, engine, data):

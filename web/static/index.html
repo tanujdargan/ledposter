@@ -257,6 +257,11 @@
     <p class="help">For Home Assistant, scripts and the game hook. Sent as <span class="mono">Authorization: Bearer</span>.</p>
     <div class="section-title">Matrix</div>
     <div class="card">
+      <label class="slider"><span class="top"><b>Refresh rate</b><span class="num" id="hz-val">–</span></span>
+        <input type="range" id="refresh" min="60" max="260" step="10" aria-label="Refresh rate cap"></label>
+      <p class="help">Higher looks smoother on moving pictures. Past what the wall can hold, the rate wobbles, which flickers too: this wall holds 130 Hz with dithering 2. The far right is no cap. Applies on release with a 3-second engine restart.</p>
+    </div>
+    <div class="card">
       <details id="matrix-details"><summary style="cursor:pointer;min-height:44px;display:flex;align-items:center">Advanced: wiring and timing</summary>
         <div style="margin-top:12px">
           <label class="field"><span>Hardware mapping</span><select class="input" id="m-mapping"><option value="adafruit-hat-pwm">adafruit-hat-pwm (GPIO4-18 mod)</option><option value="adafruit-hat">adafruit-hat</option></select></label>
@@ -264,6 +269,10 @@
             <label class="field"><span>Panel size</span><input class="input" type="number" id="m-size" min="4" max="64"></label>
             <label class="field"><span>GPIO slowdown</span><input class="input" type="number" id="m-slow" min="0" max="10"></label>
             <label class="field"><span>PWM bits</span><input class="input" type="number" id="m-pwm" min="1" max="11"></label>
+          </div>
+          <div class="inline">
+            <label class="field"><span>Dithering</span><select class="input" id="m-dither"><option value="0">0 (off)</option><option value="1">1</option><option value="2">2</option></select></label>
+            <label class="field"><span>Shortest pulse (ns)</span><input class="input" type="number" id="m-lsb" min="50" max="3000" step="10"></label>
           </div>
           <p class="help">Raise slowdown if you see flicker or garbage; lower PWM bits for a higher refresh rate.</p>
           <div class="field"><span>Chain mapping (first panel is on the bonnet; col/row on the grid, rotate clockwise)</span><div id="m-panels"></div>
@@ -273,7 +282,7 @@
             <label class="field"><span>Amps per panel at full white</span><input class="input" type="number" id="p-perpanel" min="0.5" max="20" step="0.1"></label>
           </div>
           <button class="btn primary block" id="matrix-save">Save matrix settings</button>
-          <p class="help" style="margin-top:8px">Matrix options take effect when the engine restarts. The limiter ceiling applies on reload.</p>
+          <p class="help" style="margin-top:8px">Saving restarts the engine (a few seconds dark) when a matrix option changed.</p>
         </div>
       </details>
     </div>

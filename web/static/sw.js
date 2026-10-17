@@ -1,5 +1,5 @@
 /* Caches only the app shell. API calls and media always go to the network. */
-const CACHE = "ledposter-shell-v2";  // bump when app.js/app.css change, or installed apps keep the old copy
+const CACHE = "ledposter-shell-v3";  // bump when app.js/app.css change, or installed apps keep the old copy
 const SHELL = ["/static/app.css", "/static/app.js", "/static/render.js", "/static/icon.svg",
                "/static/icon-192.png", "/static/icon-512.png", "/manifest.webmanifest"];
 
