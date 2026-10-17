@@ -268,6 +268,36 @@ def test_overlay_keeps_data_out_of_it_and_can_still_be_turned_off(world, tmp_pat
     assert not (tmp_path / "cmdline.txt.new").exists()
 
 
+def test_wifi_rejoins_only_when_wlan0_has_nothing(world, tmp_path):
+    """NetworkManager gives up on a profile after one failed handshake; the timer brings the
+    most recent client profile back, and never touches a connected wlan0 or the hotspot."""
+    nm, log = tmp_path / "bin" / "nmcli", tmp_path / "calls.log"
+
+    def stub(wlan_state):
+        nm.write_text(f'''#!/bin/sh
+echo "nmcli $*" >> "{log}"
+case "$*" in
+  "-t -f DEVICE,STATE device status") echo "eth0:unavailable"; echo "wlan0:{wlan_state}" ;;
+  "-t -f NAME,TYPE,TIMESTAMP connection show") echo "LEDWall-Setup:802-11-wireless:9"; echo "Old:802-11-wireless:5"; echo "SlowWifi:802-11-wireless:7"; echo "netplan-eth0:802-3-ethernet:8" ;;
+  "-g 802-11-wireless.mode connection show LEDWall-Setup") echo ap ;;
+  "-g 802-11-wireless.mode connection show "*) echo infrastructure ;;
+  "-w 45 connection up SlowWifi") exit 0 ;;
+esac
+exit 0
+''')
+        nm.chmod(0o755)
+        log.unlink(missing_ok=True)
+
+    stub("connected")
+    assert world.run("wifi", script=NET)[0] == 0
+    assert not any("connection up" in c for c in world.calls())
+    stub("disconnected")
+    rc, out = world.run("wifi", script=NET)
+    assert rc == 0 and "'SlowWifi' is up" in out
+    ups = [c for c in world.calls() if "connection up" in c]
+    assert ups == ["nmcli -w 45 connection up SlowWifi"]  # newest client profile; never the hotspot
+
+
 def test_service_accounts_are_ledwall_not_the_login_user():
     """The Pi's login user may well be called ledposter (and be in group sudo): no unit, polkit
     rule or root-side script may treat that name as the wall's unprivileged account."""

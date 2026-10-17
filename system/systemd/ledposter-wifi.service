@@ -1,0 +1,11 @@
+# Runs as root from ledposter-wifi.timer: brings a saved Wi-Fi profile back up when wlan0 has
+# no connection at all (NetworkManager never retries a profile after one failed handshake).
+# Installed by M8.
+[Unit]
+Description=LED wall: rejoin Wi-Fi if NetworkManager gave up
+After=NetworkManager.service
+Requisite=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ledposter-net wifi

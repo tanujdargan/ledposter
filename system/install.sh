@@ -47,7 +47,7 @@ DISABLE_UNITS="bluetooth.service hciuart.service triggerhappy.service ModemManag
   apt-daily-upgrade.timer man-db.timer dphys-swapfile.service e2scrub_all.timer"
 ENABLE_UNITS="ledposter-boot.service ledposter-engine.service ledposter-web.service ledposter-firewall.service
   ledposter-ssh.service ledposter-update.service ledposter-maintenance.timer ledposter-maintenance-resume.service
-  ledposter-net-rollback.service avahi-daemon.service NetworkManager.service"
+  ledposter-net-rollback.service ledposter-wifi.timer avahi-daemon.service NetworkManager.service"
 
 usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 

@@ -1,0 +1,11 @@
+# Every 2 minutes from 90s after boot (NetworkManager's own first attempts come first).
+# Installed and enabled by M8.
+[Unit]
+Description=LED wall: check Wi-Fi every 2 minutes
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=120
+
+[Install]
+WantedBy=timers.target
