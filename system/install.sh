@@ -283,7 +283,16 @@ step_data() {
     if [ "$free" -lt 1073741824 ]; then no_room "$disk"; fi
     note "creating a $((free / 1048576)) MB partition in the free space on $disk"
     if [ "$DRY" = 1 ]; then note "+ echo ',,L' | sfdisk --append $disk; mkfs.ext4 -L ledpostdata <new partition>"; dev="$disk"p9; else
-      echo ',,L' | sfdisk --append --no-reread "$disk"
+      # Start after the last partition (1MiB aligned): sfdisk's default start is the first free
+      # gap, which on Pi images is the 7MB before bootfs (found the hard way: a 7MB /data).
+      local dn last=0 s
+      dn="$(basename "$disk")"
+      for p in /sys/block/"$dn"/"$dn"*; do
+        [ -r "$p/start" ] || continue
+        s=$(($(cat "$p/start") + $(cat "$p/size")))
+        if [ "$s" -gt "$last" ]; then last=$s; fi
+      done
+      echo "$(((last + 2047) / 2048 * 2048)),,L" | sfdisk --append --no-reread "$disk"
       partprobe "$disk" 2> /dev/null || partx -a "$disk" 2> /dev/null || true
       sleep 1
       part="$(lsblk -nlo NAME "$disk" | tail -n 1)"
