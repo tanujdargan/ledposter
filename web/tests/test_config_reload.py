@@ -96,3 +96,18 @@ def test_save_does_not_clobber_a_newer_edit(authed, data):
     write_old(path, "matrix: [\n")
     st.save()
     assert path.read_text() == "matrix: [\n"
+
+
+def test_two_saves_in_a_row_both_land(authed, data):
+    """A slider's save_soon and a set_mode snapshot taken before either is written: the
+    later one must not be mistaken for a stale copy of a hand edit and dropped."""
+    st, path = authed.app.state, data / "config.yaml"
+    st.cfg["brightness"]["user"] = 21
+    a = st.cfg_snapshot()
+    st.cfg["brightness"]["user"] = 22
+    b = st.cfg_snapshot()
+    st.save(a)
+    st.save(b)
+    assert yaml.safe_load(path.read_text())["brightness"]["user"] == 22
+    st.save(a)  # an older snapshot arriving late is ignored
+    assert yaml.safe_load(path.read_text())["brightness"]["user"] == 22

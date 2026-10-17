@@ -22,7 +22,7 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh")
 @pytest.fixture
 def world(tmp_path):
     """Stub commands log their argv to calls.log; `date` says Sunday 04:xx (the default window).
-    `sshd` fails while world.sshd_fail exists, and rejects PerSourcePenalty* while world.sshd_old does."""
+    `sshd` rejects a drop-in with the new lines (MaxStartups) while world.sshd_fail exists, and rejects PerSourcePenalty* while world.sshd_old does."""
     stubs, data, log = tmp_path / "bin", tmp_path / "data", tmp_path / "calls.log"
     stubs.mkdir()
     data.mkdir()
@@ -31,7 +31,7 @@ def world(tmp_path):
     for name in ("ufw", "systemctl", "nmcli", "apt-get", "unattended-upgrade", "sync", "hostnamectl", "sshd", "raspi-config", "runuser", "install"):
         (stubs / name).write_text(f'#!/bin/sh\necho "{name} $*" >> "{log}"\n'
                                   + ('[ "$1 $2 $3 $4" = "-t -f DEVICE,CONNECTION device" ] && echo "wlan0:Digiana"\n' if name == "nmcli" else "")
-                                  + (f'[ -e "{sshd_fail}" ] && exit 1\n[ -e "{sshd_old}" ] && case "$*" in *PerSourcePenalty*) exit 1 ;; esac\n'
+                                  + (f'[ -e "{sshd_fail}" ] && grep -qs MaxStartups "{tmp_path}/etc-ssh/sshd_config.d/10-ledposter.conf" && exit 1\n[ -e "{sshd_old}" ] && case "$*" in *PerSourcePenalty*) exit 1 ;; esac\n'
                                      if name == "sshd" else "")
                                   + "exit 0\n")
         (stubs / name).chmod(0o755)
@@ -245,11 +245,12 @@ def test_ssh_drop_in_is_validated_and_a_rejected_one_never_replaces_the_old(worl
     world.sshd_fail.touch()
     rc, out = world.run("ssh")
     assert rc == 1 and "rejected" in out and conf.read_text() == "# previous\nPasswordAuthentication no\n"
-    assert not any("reload" in c for c in world.calls())
+    assert "systemctl reload-or-restart ssh.service" in world.calls()  # started on the restored one (boot)
     assert sorted(os.listdir(conf.parent)) == ["10-ledposter.conf"]
     conf.unlink()  # no previous drop-in: a minimal key-only one, never none
     rc, out = world.run("ssh")
     assert rc == 1 and "PasswordAuthentication no" in conf.read_text() and "PermitRootLogin no" in conf.read_text()
+    assert "/etc/ssh/ledposter_authorized_keys" in conf.read_text()  # the wall's keys still work
 
 
 def test_service_accounts_are_ledwall_not_the_login_user():

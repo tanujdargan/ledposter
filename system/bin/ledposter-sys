@@ -172,9 +172,13 @@ EOF
         mv "$conf.old" "$conf"
       else  # no previous drop-in: key-only at least, never none
         printf '%s\n' '# Written by ledposter-sys ssh: the full drop-in was rejected. Key-only.' \
-          'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' > "$conf"
+          'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
+          'AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/ledposter_authorized_keys' > "$conf"
       fi
-      die "sshd rejected the new config; kept the previous key-only drop-in, ssh not reloaded"
+      # At boot ssh.service is not running yet: start it on the restored drop-in, or the wall
+      # has no SSH at all until someone fixes the new one.
+      if sshd -t; then systemctl reload-or-restart ssh.service; fi
+      die "sshd rejected the new config; kept the previous key-only drop-in"
     fi
     rm -f "$conf.old"
     systemctl reload-or-restart ssh.service

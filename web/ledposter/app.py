@@ -510,26 +510,29 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
             st.cfg_bad = m
             return False
         st.cfg, st.cfg_mtime = cfg, m
+        st.cfg_gen += 1  # snapshots taken before this are of a config that is no longer current
         log.info("config.yaml changed on disk; reloaded")
         return True
 
-    st.cfg_seq, st.cfg_written = itertools.count(), -1
+    # cfg_gen counts versions adopted from disk, not our own saves: two saves in a row (slider,
+    # then set_mode) must both land, only a snapshot older than a hand edit is dropped.
+    st.cfg_seq, st.cfg_written, st.cfg_gen = itertools.count(), -1, 0
 
     def cfg_snapshot():
-        return copy.deepcopy(st.cfg), st.cfg_mtime, next(st.cfg_seq)
+        return copy.deepcopy(st.cfg), st.cfg_gen, next(st.cfg_seq)
 
     def save(snap=None):
         """`snap`: from cfg_snapshot(), taken on the event loop (asave)."""
         with st.cfg_lock:
-            cfg, m, n = snap or cfg_snapshot()
+            cfg, g, n = snap or cfg_snapshot()
             if n < st.cfg_written:
                 return  # a later snapshot is already on disk
-            if not reload_if_changed() or st.cfg_mtime != m:
+            if not reload_if_changed() or st.cfg_gen != g:
                 log.warning("%s was edited on disk; not overwriting it", st.cfg_path)
                 return
             config.save(cfg, st.cfg_path)
             st.cfg_mtime, st.cfg_written = cfg_mtime(), n
-    st.save = save
+    st.save, st.cfg_snapshot = save, cfg_snapshot
 
     async def asave():
         """save() off the event loop (fsync on the SD card), from a snapshot taken here so a

@@ -836,7 +836,8 @@ int main(int argc, char **argv) {
   Frame frame(layout.width, layout.height), out(layout.width, layout.height),
       sframe(layout.width, layout.height);
   int64_t last_log = -1000000, fps_t = 0, last_preview = -1000;
-  int frames = 0, log_pct = -1;
+  int frames = 0, log_pct = -1, frame_errors = 0;
+  int64_t last_frame_error = 0;
   bool shown = false, log_limited = false;
   uint64_t drawn = 0, previewed = 0, joined = 0;  // frames drawn, the last one previewed, clients seen
   while (!g_stop) {
@@ -910,7 +911,12 @@ int main(int argc, char **argv) {
         last_log = t, log_pct = st.out.pct, log_limited = st.out.limited();
       }
     } catch (const std::exception &e) {
-      fprintf(stderr, "frame: %s\n", e.what());
+      // A mode that keeps throwing retries every 100ms: log the first and then once a minute,
+      // not 10 lines a second into the journal on the SD card.
+      if (++frame_errors == 1 || t - last_frame_error >= 60000) {
+        fprintf(stderr, "frame: %s (%d errors so far)\n", e.what(), frame_errors);
+        last_frame_error = t;
+      }
       wake = t + 100;
     }
     // Wake at the next frame change, at least every 100ms, or when a command arrives.
