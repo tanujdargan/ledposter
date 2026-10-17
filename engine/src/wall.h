@@ -32,7 +32,7 @@ struct Panel {
 };
 
 struct Point {
-  int x, y;
+  int16_t x, y;  // not int: halves the lut the frame loop walks every frame (L2 on a Pi 3B)
 };
 
 // Maps the logical canvas (panels on a col/row grid) to the coordinates
@@ -54,8 +54,9 @@ struct Layout {
       width = std::max(width, (p.col + 1) * size);
       height = std::max(height, (p.row + 1) * size);
     }
-    lut.assign(size_t(width) * height, {-1, -1});
     const int n = panels.size(), s = size;
+    if (n * s > INT16_MAX) throw std::runtime_error("matrix: chain too long for the lut");
+    lut.assign(size_t(width) * height, {-1, -1});
     for (int i = 0; i < n; i++) {
       const Panel &p = panels[i];
       for (int ly = 0; ly < s; ly++)
@@ -68,7 +69,7 @@ struct Layout {
           if (dst.x >= 0)
             throw std::runtime_error("two panels share col " + std::to_string(p.col) +
                                      " row " + std::to_string(p.row));
-          dst = {(n - 1 - i) * s + nx, ny};
+          dst = {int16_t((n - 1 - i) * s + nx), int16_t(ny)};
         }
     }
   }

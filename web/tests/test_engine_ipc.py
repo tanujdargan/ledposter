@@ -203,7 +203,8 @@ def test_user_brightness_lowers_amps(engine):
 def test_fake_lux_drives_auto_brightness(engine):
     e = engine("--pattern", "solid", "--color", "ffffff", user=80)
     e.ctl.ok("set_fake_lux", lux=1)  # darker than lux_low
-    st = e.ctl.wait(lambda s: s["sensor"] == "fake")
+    # status answers before the loop's next pass recomputes auto, so wait for that pass
+    st = e.ctl.wait(lambda s: s["sensor"] == "fake" and s["brightness"]["auto"] is not None)
     assert st["lux"] == 1 and st["brightness"]["auto"] == 10
     assert st["brightness"]["effective"] == 10 and st["brightness"]["output"] == 10
     assert not st["limited"]
@@ -224,7 +225,7 @@ def test_fake_lux_drives_auto_brightness(engine):
 
     e.ctl.ok("set_auto_brightness", enabled=True)
     e.ctl.ok("set_fake_lux", lux=None)  # sensor gone: falls back to user
-    st = e.ctl.wait(lambda s: s["sensor"] == "missing")
+    st = e.ctl.wait(lambda s: s["sensor"] == "missing" and s["brightness"]["auto"] is None)
     assert st["lux"] is None and st["brightness"]["auto"] is None
     assert st["brightness"]["effective"] == 80
 

@@ -9,6 +9,7 @@ matrix:
   pwm_dither_bits: 1                  # dither 2 flickered visibly in dim tones
   pwm_lsb_nanoseconds: 100
   limit_refresh_rate_hz: 100          # steady cap: unlimited it swings 103-155Hz under load, which flickers
+  disable_busy_waiting: true          # sleep out the refresh cap, don't spin: spinning at RT 99 gets RT-throttled ~once a second
   show_refresh_rate: false            # true prints refresh Hz to the terminal
   # Chain order: the first entry is the panel plugged into the bonnet.
   # col/row place it on the portrait grid (0,0 = top-left).

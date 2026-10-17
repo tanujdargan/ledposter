@@ -3,11 +3,14 @@ config writes and the schedule task. Everything the UI does goes through /api/..
 """
 import asyncio
 import contextlib
+import copy
 import datetime as dt
+import itertools
 import json
 import logging
 import os
 import re
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any, Literal, Optional
@@ -17,6 +20,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from python_multipart import MultipartParser
+import yaml
 
 from . import __version__, auth, config, mqtt, net, schedule, sysapi, system, wifisetup
 from .engine import Engine, EngineError, EngineOffline, mode_args
@@ -484,26 +488,69 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
             return None
     st.cfg_mtime = cfg_mtime()
 
-    def save():
-        config.save(st.cfg, st.cfg_path)
-        st.cfg_mtime = cfg_mtime()
+    st.cfg_lock = threading.RLock()  # sync handlers (threadpool) and to_thread saves
+    st.cfg_bad = None  # mtime of an on-disk version that failed to load; not retried until it changes
+
+    def reload_if_changed():
+        """A hand edit of config.yaml (or the installer) must win over the copy in memory;
+        otherwise the next save from the app silently writes the old values back. False while
+        the file on disk is newer than st.cfg (unreadable, bad, empty or still being written)."""
+        m = cfg_mtime()
+        if m is None or m == st.cfg_mtime:
+            return True
+        if m == st.cfg_bad or time.time_ns() - m < 1_000_000_000:  # bad, or maybe mid-write: retry later
+            return False
+        try:
+            cfg = config.load(st.cfg_path, allow_empty=False)
+        except config.EmptyConfig:  # truncated by cp or an editor; never record it (first_run would open)
+            log.warning("%s is empty; keeping the previous config", st.cfg_path)
+            return False
+        except (OSError, ValueError, AttributeError, yaml.YAMLError) as e:
+            log.warning("%s changed but cannot be loaded, keeping the previous config: %s", st.cfg_path, e)
+            st.cfg_bad = m
+            return False
+        st.cfg, st.cfg_mtime = cfg, m
+        log.info("config.yaml changed on disk; reloaded")
+        return True
+
+    st.cfg_seq, st.cfg_written = itertools.count(), -1
+
+    def cfg_snapshot():
+        return copy.deepcopy(st.cfg), st.cfg_mtime, next(st.cfg_seq)
+
+    def save(snap=None):
+        """`snap`: from cfg_snapshot(), taken on the event loop (asave)."""
+        with st.cfg_lock:
+            cfg, m, n = snap or cfg_snapshot()
+            if n < st.cfg_written:
+                return  # a later snapshot is already on disk
+            if not reload_if_changed() or st.cfg_mtime != m:
+                log.warning("%s was edited on disk; not overwriting it", st.cfg_path)
+                return
+            config.save(cfg, st.cfg_path)
+            st.cfg_mtime, st.cfg_written = cfg_mtime(), n
     st.save = save
+
+    async def asave():
+        """save() off the event loop (fsync on the SD card), from a snapshot taken here so a
+        handler mutating st.cfg cannot race the YAML dump."""
+        await asyncio.to_thread(save, cfg_snapshot())
+    st.asave = asave
 
     @app.middleware("http")
     async def reload_edited_config(request, call_next):
-        # A hand edit of config.yaml (or the installer) must win over the copy loaded at
-        # startup; otherwise the next save from the app silently writes the old values back.
-        m = cfg_mtime()
-        if m is not None and m != st.cfg_mtime:
-            st.cfg, st.cfg_mtime = config.load(st.cfg_path), m
-            log.info("config.yaml changed on disk; reloaded")
+        if cfg_mtime() != st.cfg_mtime and st.cfg_lock.acquire(blocking=False):  # held: a save is writing
+            try:
+                reload_if_changed()
+            finally:
+                st.cfg_lock.release()
         return await call_next(request)
 
     def save_soon(delay=1.5):
         """Coalesces slider drags into one write."""
         async def later():
             await asyncio.sleep(delay)
-            save()
+            await asave()
         if st.save_task and not st.save_task.done():
             st.save_task.cancel()
         st.save_task = asyncio.create_task(later())
@@ -774,7 +821,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
             raise HTTPException(404, "No such playlist")
         await engine_call("set_mode", **mode_args(args))
         st.cfg["last_mode"] = mode_args(args)  # restored after a reboot (the engine boots on its boot screen)
-        save()
+        await asave()
 
     st.mqtt = mqtt.Bridge(SimpleNamespace(
         power=act_power, brightness=act_brightness, mode=act_mode, snapshot=snapshot,
@@ -806,7 +853,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
     async def auto_brightness(body: AutoBrightness, who=Depends(require_auth)):
         await engine_call("set_auto_brightness", enabled=body.enabled)
         st.cfg["brightness"]["auto"] = body.enabled  # so it survives an engine restart or reload
-        save()
+        await asave()
         return Ok()
 
     @app.get("/api/modes", response_model=list[ModeDef], tags=["control"],
@@ -921,8 +968,8 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
             "on_end": lambda: None})
         try:
             async for chunk in request.stream():
-                parser.write(chunk)
-            parser.finalize()
+                await asyncio.to_thread(parser.write, chunk)  # file writes and fsync off the event loop
+            await asyncio.to_thread(parser.finalize)
             if not up["item"]:
                 raise HTTPException(400, "Missing file field")
             f = up["fields"]
@@ -1029,7 +1076,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
         st.cfg["playlists"][name] = {
             "loop": body.loop, "shuffle": body.shuffle,
             "items": [{"media": i.media, **({"duration_s": i.duration_s} if i.duration_s else {})} for i in body.items]}
-        save()
+        await asave()
         await reload()
         return body
 
@@ -1038,7 +1085,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
         if name not in st.cfg["playlists"]:
             raise HTTPException(404, "No such playlist")
         del st.cfg["playlists"][name]
-        save()
+        await asave()
         await reload()
         return Ok()
 
@@ -1051,7 +1098,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
     @app.put("/api/schedule", response_model=Schedule, tags=["schedule"])
     async def put_schedule(body: Schedule, who=Depends(require_auth)):
         st.cfg["schedule"] = body.model_dump()
-        save()
+        await asave()
         await st.scheduler.tick()
         return body
 
@@ -1075,7 +1122,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
         st.cfg["power"] = body.power.model_dump()
         for k in ("mqtt", "ddp", "e131", "stream"):  # update: keeps keys the UI doesn't show (ports, ids)
             st.cfg[k].update(getattr(body, k).model_dump())
-        save()
+        await asave()
         stream_error = None
         if (before.ddp.enabled, before.e131.enabled) != (body.ddp.enabled, body.e131.enabled):
             try:

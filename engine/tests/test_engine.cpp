@@ -7,6 +7,7 @@
 
 #include "bh1750.h"
 #include "ipc.h"
+#include "loop.h"
 #include "media.h"
 #include "patterns.h"
 #include "privs.h"
@@ -406,6 +407,39 @@ static void test_stream() {
   assert(o.e131(pk.data(), pk.size()) == Assembler::kFrame && o.frame[5] == 6 && o.frame[6] == 0);
 }
 
+static void test_redraw() {
+  Redraw r;
+  assert(r.needed(0, false, false, false, 80));  // the first frame
+  r.drawn(100, false, 80);
+  // Status polls and the 100ms tick before the mode's next frame: nothing to draw.
+  assert(!r.needed(10, false, false, false, 80) && !r.needed(99, false, false, false, 80));
+  assert(r.needed(100, false, false, false, 80));  // the mode's next frame is due
+  assert(r.needed(50, false, false, false, 79));   // brightness (auto, user or limiter input)
+  assert(r.needed(50, false, false, false, 0));    // power off
+  assert(r.needed(50, false, false, true, 80));    // an overlay is up
+  r.drawn(100, true, 80);
+  assert(r.needed(60, false, false, false, 80));   // ...and one more frame once it is gone
+  r.drawn(100, false, 80);
+  assert(!r.needed(60, false, false, false, 80));
+  r.dirty = true;  // set_mode, reload_config, a playlist skip, stream end
+  assert(r.needed(60, false, false, false, 80));
+  r.drawn(100, false, 80);
+  // Streaming: only new stream frames draw, whatever the paused mode's due time.
+  assert(!r.needed(500, true, false, false, 80) && r.needed(500, true, true, false, 80));
+
+  // reload_config: the running playlist keeps its place unless its definition changed.
+  const std::string a = "items:\n  - media: x\n", b = "items:\n  - media: y\n";
+  assert(!rebuild_playlist("playlist", a, a));  // unrelated keys changed
+  assert(rebuild_playlist("playlist", a, b) && rebuild_playlist("playlist", a, ""));
+  assert(!rebuild_playlist("effect", a, b));
+
+  // Replies with invalid UTF-8 (a name from a file) still go out.
+  Mailbox mb;
+  mb.push({1, 7, [] { return json{{"name", std::string("bad \xff name")}}; }});
+  mb.run();
+  assert(mb.replies.size() == 1 && mb.replies[0].second.find("\"ok\":true") != std::string::npos);
+}
+
 int main(int argc, char **argv) {
   // Spec snake: chain index 0 is top-left and sits at the right end of the strip.
   Layout L(64, kSnake);
@@ -425,6 +459,10 @@ int main(int argc, char **argv) {
     seen.insert({p.x, p.y});
   }
   assert(seen.size() == 128u * 192u);
+  static_assert(sizeof(Point) == 4, "lut entries stay 16-bit");
+  std::vector<Panel> wide;  // 600 * 64 physical columns don't fit an int16_t
+  for (int i = 0; i < 600; i++) wide.push_back({i, 0});
+  assert(throws([&] { Layout(64, wide); }));
 
   // Rotated panels: corners land where an upside-down / quarter-turned panel puts them.
   Layout R(64, {{0, 0, 180}});
@@ -474,6 +512,7 @@ int main(int argc, char **argv) {
   test_stream();
   test_double_press();
   test_privs();
+  test_redraw();
 
   if (argc > 1) {
     draw_pattern("panel-id", f, L, 0, 0);

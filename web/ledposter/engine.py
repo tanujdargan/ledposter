@@ -175,6 +175,8 @@ class Engine:
                     self._fanout((st, frame))
             except (OSError, asyncio.IncompleteReadError, ValueError, KeyError) as e:
                 log.warning("preview stream ended: %s", e)
+            except Exception:  # anything else must not end the preview task for good
+                log.exception("preview stream failed")
             finally:
                 writer.close()
                 self.preview_status = None

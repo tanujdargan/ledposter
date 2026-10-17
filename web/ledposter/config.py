@@ -67,24 +67,35 @@ def path():
     return os.path.join(data_dir(), "config.yaml")
 
 
-def load(p=None):
-    """Config dict with every DEFAULTS section present (missing keys filled in, nothing removed)."""
+class EmptyConfig(ValueError):
+    pass
+
+
+def load(p=None, allow_empty=True):
+    """Config dict with every DEFAULTS section present (missing keys filled in, nothing removed).
+    allow_empty=False: an existing file with no document raises EmptyConfig (read mid-write)."""
     p = p or path()
     cfg = {}
     if os.path.exists(p):
         with open(p) as f:
-            cfg = yaml.safe_load(f) or {}
+            cfg = yaml.safe_load(f)
+        if cfg is None or cfg == {}:
+            if not allow_empty:
+                raise EmptyConfig(f"{p}: empty")
+            cfg = {}
         if not isinstance(cfg, dict):
             raise ValueError(f"{p}: top level must be a mapping")
     for key, default in DEFAULTS.items():
-        if key == "playlists":
-            cfg.setdefault(key, {})
-        elif isinstance(default, dict):
-            section = cfg.setdefault(key, {})
-            for k, v in default.items():
-                section.setdefault(k, copy.deepcopy(v))
+        if isinstance(default, dict):
+            if not isinstance(cfg.get(key), dict):  # missing, or a bare `web:` (null)
+                cfg[key] = {}
+            if key != "playlists":
+                for k, v in default.items():
+                    cfg[key].setdefault(k, copy.deepcopy(v))
         else:
             cfg.setdefault(key, default)
+    if not isinstance(cfg["web"]["tokens"], list):  # auth.find_token iterates it
+        cfg["web"]["tokens"] = []
     cfg["version"] = cfg.get("version") or DEFAULTS["version"]
     try:
         ceiling = float(cfg["power"].get("ceiling_amps"))

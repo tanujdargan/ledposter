@@ -28,6 +28,7 @@
 #include "button.h"
 #include "catalog.h"
 #include "ipc.h"
+#include "loop.h"
 #include "media.h"
 #include "overlay.h"
 #include "patterns.h"
@@ -64,6 +65,10 @@ struct Display {
     // Caps refresh at a steady rate below the dips our frame loop causes on a Pi 3
     // (measured 103-155Hz unlimited): an uneven refresh rate reads as flicker.
     o.limit_refresh_rate_hz = m["limit_refresh_rate_hz"].as<int>(0);
+    // Sleep out the rest of each limit_refresh_rate_hz period instead of spinning: a refresh
+    // thread busy at RT 99 runs into the kernel's RT throttling (the library sets
+    // sched_rt_runtime_us to 990000), a ~10ms stall about once a second.
+    o.disable_busy_waiting = m["disable_busy_waiting"].as<bool>(true);
     o.brightness = 100;
     o.show_refresh_rate = m["show_refresh_rate"].as<bool>(false);
     rgb_matrix::RuntimeOptions rt;
@@ -371,6 +376,7 @@ struct State {
   uint64_t stream_seen = 0, stream_fps_base = 0;
   double stream_fps = 0;
   std::string stream_src;
+  Redraw draw;
 };
 
 // A config section as text, to spot changes that need a restart. The live
@@ -619,7 +625,7 @@ int main(int argc, char **argv) {
   std::atomic<int> cycle_pos{-1};  // last button.cycle entry the button picked
   // Frame loop: back to the paused mode, where it was.
   auto end_stream = [&](int64_t t, bool dismissed) {
-    st.streaming = false, st.stream_dismissed = dismissed;
+    st.streaming = false, st.stream_dismissed = dismissed, st.draw.dirty = true;
     if (st.mode_t0 >= 0) st.mode_t0 += t - st.paused_at;
   };
   auto install = [&](Mode mode, ModeInfo info) {
@@ -702,8 +708,14 @@ int main(int argc, char **argv) {
         std::lock_guard<std::mutex> l(cur_mu);
         running = cur;
       }
-      std::optional<Mode> mode;  // the running playlist, rebuilt from the new config
-      if (running.kind == "playlist") mode = playlist_mode(next, running.name, media_dir, layout);
+      // The running playlist, rebuilt from the new config if its definition changed.
+      std::optional<Mode> mode;
+      auto def = [&](YAML::Node c) {  // as text, "" if missing
+        const YAML::Node p = c["playlists"][running.name];
+        return p ? YAML::Dump(p) : std::string();
+      };
+      if (rebuild_playlist(running.kind, def(cfg), def(next)))
+        mode = playlist_mode(next, running.name, media_dir, layout);
       json restart = json::array();
       for (const char *k : {"matrix", "sensors", "engine", "button", "fonts"})
         if (yaml_at(next, k) != yaml_at(boot, k)) restart.push_back(k);
@@ -715,7 +727,7 @@ int main(int argc, char **argv) {
         stream_err = e.what();
       }
       return [&, s, mode, restart, stream_err]() mutable {
-        st.s = s, sensor.tau_s = s.smoothing_s;
+        st.s = s, sensor.tau_s = s.smoothing_s, st.draw.dirty = true;  // gamma may have changed
         if (mode) st.mode = std::move(*mode), st.mode_t0 = -1;
         if (!stream_err.empty())
           throw std::runtime_error("config applied, but stream input failed: " + stream_err);
@@ -786,7 +798,7 @@ int main(int argc, char **argv) {
       job = [&, next, idx, skip_items]() mutable {
         if (st.streaming) end_stream(engine_ms(), true);  // then advance the mode underneath
         if (skip_items && st.mode.skip && st.mode_t0 >= 0 && st.mode.skip(engine_ms() - st.mode_t0))
-          return ok();
+          return st.draw.dirty = true, ok();
         if (next) install(std::move(next->first), next->second), cycle_pos = idx;
         return ok();
       };
@@ -823,62 +835,83 @@ int main(int argc, char **argv) {
 
   Frame frame(layout.width, layout.height), out(layout.width, layout.height),
       sframe(layout.width, layout.height);
-  int64_t last_log = -1000, fps_t = 0, last_preview = -1000;
-  int frames = 0;
-  bool shown = false;
+  int64_t last_log = -1000000, fps_t = 0, last_preview = -1000;
+  int frames = 0, log_pct = -1;
+  bool shown = false, log_limited = false;
+  uint64_t drawn = 0, previewed = 0, joined = 0;  // frames drawn, the last one previewed, clients seen
   while (!g_stop) {
     using namespace std::chrono;
     mailbox.run();
     const int64_t t = duration_cast<milliseconds>(steady_clock::now() - t0).count();
-    {
-      std::lock_guard<std::mutex> l(sout.mu);
-      st.stream_last_ms = sout.last_packet_ms;
-      const bool fresh = sout.frames != st.stream_seen && sout.rgb.size() == sframe.rgb.size();
-      if (fresh) sframe.rgb = sout.rgb, st.stream_seen = sout.frames, st.stream_src = sout.source;
-      if (fresh && receiver.any() && !st.stream_dismissed && !st.streaming)
-        st.streaming = true, st.paused_at = t;
-    }
-    const bool quiet = steady_ms() - st.stream_last_ms > st.s.stream.timeout_s * 1000;
-    if (st.streaming && (!receiver.any() || quiet)) end_stream(t, false);
-    if (st.stream_dismissed && (!receiver.any() || quiet)) st.stream_dismissed = false;
     int64_t wake = t + 100;
-    if (st.streaming) {
-      frame.rgb = sframe.rgb;
-      if (st.s.stream.apply_gamma)
-        for (auto &v : frame.rgb) v = st.s.lut[v];
-    } else {
-      if (st.mode_t0 < 0) st.mode_t0 = t;
-      wake = st.mode_t0 + st.mode.render(frame, t - st.mode_t0);
-      if (st.mode.gamma)
-        for (auto &v : frame.rgb) v = st.s.lut[v];
-    }
-    if (st.ov->active(t)) {  // on top of the mode or stream, before brightness and the limiter
-      st.ov->apply(frame, t, st.s.lut);
-      wake = std::min(wake, t + fx::kFrameMs);
-    }
-    st.auto_pct = auto_pct(st.s.curve, sensor.smoothed);
-    st.effective = effective_pct(st.s.user, st.s.auto_on ? st.auto_pct : NAN);
-    st.out = limit_power(frame, layout.size, st.s.amps_full, st.power ? st.effective : 0,
-                         st.s.ceiling);
-    display.show(frame, st.out.pct);
-    if (!shown) fprintf(stderr, "first frame\n"), shown = true;  // boot timing (docs/ACCEPTANCE.md)
-    frames++;
-    if (t - fps_t >= 1000) {
-      st.fps = frames * 1000.0 / (t - fps_t), frames = 0;
-      st.stream_fps = (st.stream_seen - st.stream_fps_base) * 1000.0 / (t - fps_t);
-      st.stream_fps_base = st.stream_seen, fps_t = t;
-    }
-    if (preview && preview->wanted() && t - last_preview >= 1000 / st.s.preview_fps) {
-      scale_frame(frame, st.out.pct, out);
-      std::string msg = status().dump() + "\n";
-      msg.append(out.rgb.begin(), out.rgb.end());
-      preview->publish(std::move(msg));
-      last_preview = t;
-    }
-    if (t - last_log >= 1000) {
-      fprintf(stderr, "est %.2fA%s, brightness %d%%\n", st.out.amps,
-              st.out.limited() ? " (limited)" : "", st.out.pct);
-      last_log = t;
+    try {  // a mode or overlay that throws must not take the wall down
+      bool fresh;
+      {
+        std::lock_guard<std::mutex> l(sout.mu);
+        st.stream_last_ms = sout.last_packet_ms;
+        fresh = sout.frames != st.stream_seen && sout.rgb.size() == sframe.rgb.size();
+        if (fresh) sframe.rgb = sout.rgb, st.stream_seen = sout.frames, st.stream_src = sout.source;
+        if (fresh && receiver.any() && !st.stream_dismissed && !st.streaming)
+          st.streaming = true, st.paused_at = t;
+      }
+      const bool quiet = steady_ms() - st.stream_last_ms > st.s.stream.timeout_s * 1000;
+      if (st.streaming && (!receiver.any() || quiet)) end_stream(t, false);
+      if (st.stream_dismissed && (!receiver.any() || quiet)) st.stream_dismissed = false;
+      if (!st.streaming && st.mode_t0 < 0) st.draw.dirty = true;  // new or rebuilt mode
+      const bool ov = st.ov->active(t);
+      st.auto_pct = auto_pct(st.s.curve, sensor.smoothed);
+      st.effective = effective_pct(st.s.user, st.s.auto_on ? st.auto_pct : NAN);
+      const int want = st.power ? st.effective : 0;
+      if (st.draw.needed(t, st.streaming, fresh, ov, want)) {
+        int64_t due = st.draw.due;
+        if (st.streaming) {
+          frame.rgb = sframe.rgb;
+          if (st.s.stream.apply_gamma)
+            for (auto &v : frame.rgb) v = st.s.lut[v];
+        } else {
+          if (st.mode_t0 < 0) st.mode_t0 = t;
+          due = st.mode_t0 + st.mode.render(frame, t - st.mode_t0);
+          if (st.mode.gamma)
+            for (auto &v : frame.rgb) v = st.s.lut[v];
+        }
+        // Overlays go on top of the mode or stream, before brightness and the limiter.
+        if (ov) st.ov->apply(frame, t, st.s.lut);
+        st.out = limit_power(frame, layout.size, st.s.amps_full, want, st.s.ceiling);
+        display.show(frame, st.out.pct);
+        st.draw.drawn(due, ov, want);
+        if (!shown) fprintf(stderr, "first frame\n"), shown = true;  // boot timing (docs/ACCEPTANCE.md)
+        frames++, drawn++;
+      }
+      // Still at least every 100ms: the light sensor moves `want` without waking us. Cheap,
+      // since a wake only redraws when needed() says so.
+      if (!st.streaming) wake = std::min(wake, st.draw.due);
+      if (ov) wake = std::min(wake, t + fx::kFrameMs);
+      if (t - fps_t >= 1000) {
+        st.fps = frames * 1000.0 / (t - fps_t), frames = 0;
+        st.stream_fps = (st.stream_seen - st.stream_fps_base) * 1000.0 / (t - fps_t);
+        st.stream_fps_base = st.stream_seen, fps_t = t;
+      }
+      // Only new frames (a still picture is sent once), or the current one for a new client.
+      const uint64_t j = preview ? preview->joined.load() : 0;  // read once: a later join gets the next
+      if (preview && preview->wanted() && (drawn != previewed || j != joined) &&
+          t - last_preview >= 1000 / st.s.preview_fps) {
+        scale_frame(frame, st.out.pct, out);
+        std::string msg = status().dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
+        msg.append(out.rgb.begin(), out.rgb.end());
+        preview->publish(std::move(msg));
+        last_preview = t, previewed = drawn, joined = j;
+      }
+      // On a change (at most once a second, the limiter moves pct with the picture), else
+      // a heartbeat every minute.
+      const bool changed = st.out.pct != log_pct || st.out.limited() != log_limited;
+      if ((changed && t - last_log >= 1000) || t - last_log >= 60000) {
+        fprintf(stderr, "est %.2fA%s, brightness %d%%\n", st.out.amps,
+                st.out.limited() ? " (limited)" : "", st.out.pct);
+        last_log = t, log_pct = st.out.pct, log_limited = st.out.limited();
+      }
+    } catch (const std::exception &e) {
+      fprintf(stderr, "frame: %s\n", e.what());
+      wake = t + 100;
     }
     // Wake at the next frame change, at least every 100ms, or when a command arrives.
     mailbox.wait_until(t0 + milliseconds(std::clamp(wake, t + 1, t + 100)));

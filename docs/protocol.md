@@ -98,7 +98,7 @@ The response echoes `mode`, `mode_name` (pattern name, media id, playlist name, 
 
 **`ack_wifi_setup`** clears `wifi_setup_requested` in the status (see [Button](#button)). `wifi_setup_count` keeps counting.
 
-**`reload_config`** re-reads the config file and applies what can change live: power ceiling and calibration, gamma, brightness settings (user, auto, curve, smoothing), `engine.preview_fps`, the playlists, and the `ddp`, `e131` and `stream` sections (receivers are reopened only if their settings changed). If a DDP/E1.31 port can't be opened, everything else is still applied and the response is an error naming the port; that receiver stays off. If the running mode is a playlist, it restarts with the new definition. The file is checked first; if it is invalid (bad YAML, a value out of range, the running playlist removed or broken), the response is an error and the old settings stay.
+**`reload_config`** re-reads the config file and applies what can change live: power ceiling and calibration, gamma, brightness settings (user, auto, curve, smoothing), `engine.preview_fps`, the playlists, and the `ddp`, `e131` and `stream` sections (receivers are reopened only if their settings changed). If a DDP/E1.31 port can't be opened, everything else is still applied and the response is an error naming the port; that receiver stays off. If the running mode is a playlist, it restarts only when that playlist's own definition changed; otherwise it keeps its place. The file is checked first; if it is invalid (bad YAML, a value out of range, the running playlist removed or broken), the response is an error and the old settings stay.
 
 `restart_needed` lists the sections that changed but only take effect after an engine restart: `matrix` (anything about the panels), `sensors`, `engine` (socket paths), `button` (pin, chip, timings; `button.cycle` and `button.skip_playlist_items` are live), `fonts`. Empty list: everything was applied.
 
@@ -202,7 +202,7 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
 | `wifi_setup_count` | very long presses since the engine started |
 | `wifi_setup_at` | unix time of the last one, or `null` |
 | `button_double_count` | double presses since the engine started (the web app shows the IP on each new one) |
-| `fps` | frames output per second, measured over the last second. The engine only redraws when the picture changes (and at least 10 times a second), so a still image shows about 10 |
+| `fps` | frames output per second, measured over the last second. The engine only redraws when the picture changes (a frame is due, or brightness, power, an overlay or the mode changed), so a still image shows about 0; status requests never cause a redraw |
 | `amps` | estimated panel current of the last frame, after the limiter. Never above `ceiling_amps` |
 | `amps_unlimited` | what the frame would draw at `brightness.effective` without the limiter |
 | `limited` | true when the limiter turned this frame down |

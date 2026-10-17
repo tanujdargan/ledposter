@@ -186,7 +186,7 @@ def install(app, st, require_auth, apply_later):
         if body.mode == "key-only" and not keys:
             raise HTTPException(422, "Key-only SSH needs at least one public key, or you would be locked out")
         st.cfg["ssh"] = {"mode": body.mode, "authorized_keys": "".join(k + "\n" for k in keys)}
-        st.save()
+        await st.asave()
         await sync_and_apply()
         return SshSettings(**st.cfg["ssh"])
 
@@ -194,7 +194,7 @@ def install(app, st, require_auth, apply_later):
              summary="Weekly security-update window (the wall reboots twice; docs/DEVIATIONS.md)")
     async def put_maintenance(body: Maintenance, who=Depends(require_auth)):
         st.cfg["maintenance"] = body.model_dump()
-        st.save()
+        await st.asave()
         await sync_and_apply()
         return body
 

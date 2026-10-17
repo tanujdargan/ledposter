@@ -227,7 +227,8 @@ struct Mailbox {
         r = {{"ok", false}, {"error", e.what()}};
       }
       r["id"] = it.id;
-      out.push_back({it.client, r.dump() + "\n"});
+      // replace: invalid UTF-8 (a name, an error quoting input) must not throw here
+      out.push_back({it.client, r.dump(-1, ' ', false, json::error_handler_t::replace) + "\n"});
     }
     {
       std::lock_guard<std::mutex> l(mu);
@@ -398,6 +399,7 @@ struct PreviewServer {
   Waker wake;
   std::atomic<bool> stop{false};
   std::atomic<int> nclients{0};
+  std::atomic<uint64_t> joined{0};  // clients accepted so far: the frame loop resends a still frame
   std::mutex mu;
   std::shared_ptr<const std::string> latest;
   uint64_t seq = 0;
@@ -445,7 +447,7 @@ struct PreviewServer {
       if (p[0].revents & POLLIN)
         for (int fd; (fd = accept_client(lfd)) >= 0;) {
           if (clients.size() >= 8) close(fd);
-          else clients.push_back({fd, nullptr, 0, s});  // starts with the next frame
+          else clients.push_back({fd, nullptr, 0, s}), joined++;  // starts with the next frame
         }
       nclients = clients.size();
     }

@@ -10,6 +10,7 @@ import os
 import sys
 
 import uvicorn
+import yaml
 
 from . import config
 from .app import create_app
@@ -43,10 +44,14 @@ def main():
     a = p.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     setup_file_log(os.path.join(config.data_dir(), "logs", "web"))
-    port = a.port or int(config.load()["web"]["port"])
+    try:  # unreadable at start: fail loudly (systemd restarts us), naming the file
+        port = a.port or int(config.load()["web"]["port"])
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        sys.exit(f"cannot load {config.path()}: {e}")
     fake = os.environ.get("LEDPOSTER_FAKE_NET")
     runner = fake_net_runner(fake) if fake else None
-    uvicorn.run(create_app(net_runner=runner), host=a.host, port=port, log_level="info", ws_max_size=1 << 20)
+    uvicorn.run(create_app(net_runner=runner), host=a.host, port=port, log_level="info", ws_max_size=1 << 20,
+                ws_per_message_deflate=False)  # raw preview frames: deflate per client per frame is wasted CPU
 
 
 if __name__ == "__main__":

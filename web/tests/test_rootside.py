@@ -21,21 +21,27 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh")
 
 @pytest.fixture
 def world(tmp_path):
-    """Stub commands log their argv to calls.log; `date` says Sunday 04:xx (the default window)."""
+    """Stub commands log their argv to calls.log; `date` says Sunday 04:xx (the default window).
+    `sshd` fails while world.sshd_fail exists, and rejects PerSourcePenalty* while world.sshd_old does."""
     stubs, data, log = tmp_path / "bin", tmp_path / "data", tmp_path / "calls.log"
     stubs.mkdir()
     data.mkdir()
     (data / "state").mkdir()
-    for name in ("ufw", "systemctl", "nmcli", "apt-get", "unattended-upgrade", "sync", "hostnamectl", "sshd", "raspi-config", "runuser"):
+    sshd_fail, sshd_old = tmp_path / "sshd-fail", tmp_path / "sshd-old"
+    for name in ("ufw", "systemctl", "nmcli", "apt-get", "unattended-upgrade", "sync", "hostnamectl", "sshd", "raspi-config", "runuser", "install"):
         (stubs / name).write_text(f'#!/bin/sh\necho "{name} $*" >> "{log}"\n'
                                   + ('[ "$1 $2 $3 $4" = "-t -f DEVICE,CONNECTION device" ] && echo "wlan0:Digiana"\n' if name == "nmcli" else "")
+                                  + (f'[ -e "{sshd_fail}" ] && exit 1\n[ -e "{sshd_old}" ] && case "$*" in *PerSourcePenalty*) exit 1 ;; esac\n'
+                                     if name == "sshd" else "")
                                   + "exit 0\n")
         (stubs / name).chmod(0o755)
     (stubs / "date").write_text('#!/bin/sh\ncase "$1" in +%u) echo 7 ;; +%H) echo 04 ;; *) echo "2026-10-04 04:00:00" ;; esac\n')
     (stubs / "date").chmod(0o755)
     (stubs / "ledposter-sys").symlink_to(os.path.abspath(SYS))
     (stubs / "ledposter-net").symlink_to(os.path.abspath(NET))
-    env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", LEDPOSTER_DATA=str(data))
+    etc_ssh = tmp_path / "etc-ssh"
+    etc_ssh.mkdir()
+    env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", LEDPOSTER_DATA=str(data), LEDPOSTER_SSH_ETC=str(etc_ssh))
 
     def run(*argv, script=SYS):
         r = subprocess.run(["sh", script, *argv], env=env, capture_output=True, text=True, timeout=30)
@@ -43,7 +49,8 @@ def world(tmp_path):
 
     def calls():
         return log.read_text().splitlines() if log.exists() else []
-    return type("World", (), {"run": staticmethod(run), "calls": staticmethod(calls), "data": data, "log": log})
+    return type("World", (), {"run": staticmethod(run), "calls": staticmethod(calls), "data": data, "log": log,
+                              "etc_ssh": etc_ssh, "sshd_fail": sshd_fail, "sshd_old": sshd_old})
 
 
 def test_input_reads_only_plain_files_of_the_service_user(world, tmp_path):
@@ -171,7 +178,7 @@ def test_layout_creates_only_what_is_missing_and_follows_nothing(world, tmp_path
     assert rc == 1 and "symlink" in out
 
 
-def test_boot_restores_a_missing_or_garbled_wifi_profile_from_backup(world, tmp_path):
+def test_boot_restores_a_garbled_wifi_profile_from_backup(world, tmp_path):
     nm, bak = world.data / "state" / "nm", world.data / "state" / "nm-backup"
     nm.mkdir()
     good = "[connection]\nid=SlowWifi\ntype=wifi\n"
@@ -181,15 +188,68 @@ def test_boot_restores_a_missing_or_garbled_wifi_profile_from_backup(world, tmp_
     assert stat.S_IMODE(os.stat(bak).st_mode) == 0o700
     (nm / "SlowWifi.nmconnection").write_bytes(b"\xff\xfe garbage")  # power cut mid-write
     rc, out = world.run("boot")
-    assert rc == 0 and "restoring" in out
+    assert rc == 0 and "garbled: restoring" in out
     assert (nm / "SlowWifi.nmconnection").read_text() == good
     assert (bak / "SlowWifi.nmconnection").read_text() == good  # garbage never overwrites the backup
-    (nm / "SlowWifi.nmconnection").unlink()
-    assert world.run("boot")[0] == 0 and (nm / "SlowWifi.nmconnection").read_text() == good
+    assert sorted(os.listdir(nm)) == ["SlowWifi.nmconnection"]  # no temp file left behind
+    (nm / "SlowWifi.nmconnection").unlink()  # the only profile gone: put back
+    rc, out = world.run("boot")
+    assert rc == 0 and "no good Wi-Fi profile left" in out and (nm / "SlowWifi.nmconnection").read_text() == good
     (nm / "SlowWifi.nmconnection").unlink()
     (nm / "SlowWifi.nmconnection").symlink_to(tmp_path / "elsewhere")
     rc, out = world.run("boot")
     assert rc == 0 and not (tmp_path / "elsewhere").exists()
+
+
+def test_boot_keeps_a_deleted_wifi_profile_deleted_while_another_is_good(world):
+    nm, bak = world.data / "state" / "nm", world.data / "state" / "nm-backup"
+    nm.mkdir()
+    old, home = "[connection]\nid=Old\n", "[connection]\nid=Home\n"
+    (nm / "Old.nmconnection").write_text(old)
+    (nm / "Home.nmconnection").write_text(home)
+    assert world.run("boot")[0] == 0 and sorted(os.listdir(bak)) == ["Home.nmconnection", "Old.nmconnection"]
+    (nm / "Old.nmconnection").unlink()  # forgotten in Settings
+    rc, out = world.run("boot")
+    assert rc == 0 and "dropping its backup" in out
+    assert sorted(os.listdir(nm)) == ["Home.nmconnection"] and sorted(os.listdir(bak)) == ["Home.nmconnection"]
+    (nm / "Home.nmconnection").write_text("garbage\n")  # all Wi-Fi gone: only Home comes back, Old stays forgotten
+    rc, out = world.run("boot")
+    assert rc == 0 and (nm / "Home.nmconnection").read_text() == home and not (nm / "Old.nmconnection").exists()
+
+
+def test_boot_carries_on_when_the_wifi_guard_fails(world):
+    nm = world.data / "state" / "nm"
+    nm.mkdir()
+    (world.data / "state" / "nm-backup").symlink_to(world.data)  # root_dir dies on it
+    (world.data / "state" / "hostname").write_text("wall-x\n")
+    rc, out = world.run("boot")
+    assert rc == 0 and "guard failed" in out and any(c.startswith("hostnamectl set-hostname wall-x") for c in world.calls())
+
+
+def test_ssh_drop_in_is_validated_and_a_rejected_one_never_replaces_the_old(world):
+    d, conf = world.data, world.etc_ssh / "sshd_config.d" / "10-ledposter.conf"
+    (d / "ssh").mkdir()
+    (d / "ssh" / "mode").write_text("key-only\n")
+    (d / "ssh" / "authorized_keys").write_text("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDQ6Z8ZQ7u9w3mT2Hn5QxqV0lR9ZkD5z1y8o7PeXYgAb me\n")
+    rc, out = world.run("ssh")
+    assert rc == 0 and "key-only, 1 key(s)" in out
+    text = conf.read_text()
+    assert "PasswordAuthentication no" in text and "MaxStartups 20:30:60" in text and "LoginGraceTime 30" in text
+    assert "PerSourcePenaltyExemptList 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fe80::/10,fd00::/8" in text
+    assert "systemctl reload-or-restart ssh.service" in world.calls()
+    world.sshd_old.touch()  # OpenSSH < 9.8: the option is left out
+    assert world.run("ssh")[0] == 0 and "PerSourcePenalty" not in conf.read_text() and "MaxStartups" in conf.read_text()
+    world.sshd_old.unlink()
+    world.log.unlink()
+    conf.write_text("# previous\nPasswordAuthentication no\n")
+    world.sshd_fail.touch()
+    rc, out = world.run("ssh")
+    assert rc == 1 and "rejected" in out and conf.read_text() == "# previous\nPasswordAuthentication no\n"
+    assert not any("reload" in c for c in world.calls())
+    assert sorted(os.listdir(conf.parent)) == ["10-ledposter.conf"]
+    conf.unlink()  # no previous drop-in: a minimal key-only one, never none
+    rc, out = world.run("ssh")
+    assert rc == 1 and "PasswordAuthentication no" in conf.read_text() and "PermitRootLogin no" in conf.read_text()
 
 
 def test_service_accounts_are_ledwall_not_the_login_user():

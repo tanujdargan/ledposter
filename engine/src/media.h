@@ -61,6 +61,11 @@ inline Clip open_clip(const std::string &dir, int w, int h, const std::vector<in
   void *p = mmap(nullptr, want, PROT_READ, MAP_SHARED, fd, 0);
   close(fd);
   if (p == MAP_FAILED) throw fail("mmap frames.rgb: " + std::string(strerror(errno)));
+#ifdef MADV_WILLNEED
+  // Read ahead now, or the first pass faults each frame in from the SD card on the
+  // frame loop. Not MADV_SEQUENTIAL: Linux may drop pages behind it, and clips loop.
+  madvise(p, want, MADV_WILLNEED);  // advice only: a failure changes nothing
+#endif
   c.data.reset(static_cast<const uint8_t *>(p),
                [want](const uint8_t *q) { munmap(const_cast<uint8_t *>(q), want); });
   return c;

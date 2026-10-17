@@ -21,6 +21,7 @@ set -eu
 
 data="${LEDPOSTER_DATA:-/data}"
 state="$data/state"
+ssh_etc="${LEDPOSTER_SSH_ETC:-/etc/ssh}"  # overridden by the tests only
 svc_user=ledwall
 # Mirrors ledposter.system.RULE_RE / KEY_RE / MAINT_RE: the only lines accepted from the app's files.
 rule_re='^(default (deny|allow) (incoming|outgoing)|logging off|allow [0-9]{1,5}/(tcp|udp)|allow in on [a-z0-9.-]{1,15} to any port [0-9]{1,5} proto (tcp|udp))$'
@@ -121,7 +122,7 @@ ssh_mode() {
   if ! data_present; then
     # /data did not mount: keep the mode the installer (or the last maintenance boot, when the
     # root was writable) left in /etc/ssh, so the wall stays reachable to fix it.
-    if [ -s /etc/ssh/ledposter_authorized_keys ] && [ -f /etc/ssh/sshd_config.d/10-ledposter.conf ]; then
+    if [ -s "$ssh_etc/ledposter_authorized_keys" ] && [ -f "$ssh_etc/sshd_config.d/10-ledposter.conf" ]; then
       systemctl start ssh.service && say "$data is not there: ssh stays key-only with the installed keys"
     else
       say "$data is not there: ssh stays disabled"
@@ -136,10 +137,23 @@ ssh_mode() {
     [ -n "$keys" ] || die "key-only SSH but $data/ssh/authorized_keys is empty; leaving SSH as it is"
     printf '%s\n' "$keys" | check_lines ssh/authorized_keys "$key_re" || exit 1
     # /etc is the read-only root (or its overlay): only root writes there, so plain writes are fine.
-    printf '%s\n' "$keys" > /etc/ssh/ledposter_authorized_keys
-    chmod 644 /etc/ssh/ledposter_authorized_keys
-    mkdir -p /etc/ssh/sshd_config.d
-    cat > /etc/ssh/sshd_config.d/10-ledposter.conf <<'EOF'
+    printf '%s\n' "$keys" > "$ssh_etc/ledposter_authorized_keys"
+    chmod 644 "$ssh_etc/ledposter_authorized_keys"
+    conf="$ssh_etc/sshd_config.d/10-ledposter.conf"
+    mkdir -p "$ssh_etc/sshd_config.d"
+    # ssh.service is disabled, so at boot nothing has made its RuntimeDirectory yet, and
+    # OpenSSH 10 (trixie) fails `sshd -t` without it: SSH would stay off after every reboot.
+    install -d -m 0755 /run/sshd
+    # OpenSSH 9.8+ penalises an address after ~15 aborted connections and resets every new one at
+    # kex for up to 10 min; logins are key-only, so the LAN is exempt. Older sshd rejects the option.
+    lan=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fe80::/10,fd00::/8
+    penalty=""
+    if sshd -t -o "PerSourcePenaltyExemptList=$lan" 2> /dev/null; then penalty="PerSourcePenaltyExemptList $lan"; fi
+    # The new drop-in is checked in place with the old one kept aside (.new/.old are not *.conf,
+    # so sshd's Include skips them): a rejected config never leaves sshd on Debian's defaults.
+    if [ -f "$conf" ]; then cp -p "$conf" "$conf.old"; else rm -f "$conf.old"; fi
+    {
+      cat <<'EOF'
 # Written by ledposter-sys ssh at every boot (the root is a read-only overlay). Key-only.
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -147,15 +161,26 @@ ChallengeResponseAuthentication no
 PermitRootLogin no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/ledposter_authorized_keys
+MaxStartups 20:30:60
+LoginGraceTime 30
 EOF
-    # ssh.service is disabled, so at boot nothing has made its RuntimeDirectory yet, and
-    # OpenSSH 10 (trixie) fails `sshd -t` without it: SSH would stay off after every reboot.
-    install -d -m 0755 /run/sshd
-    sshd -t || { rm -f /etc/ssh/sshd_config.d/10-ledposter.conf; die "sshd rejected the config; drop-in removed"; }
+      if [ -n "$penalty" ]; then echo "$penalty"; fi
+    } > "$conf.new"
+    mv "$conf.new" "$conf"
+    if ! sshd -t; then
+      if [ -f "$conf.old" ]; then
+        mv "$conf.old" "$conf"
+      else  # no previous drop-in: key-only at least, never none
+        printf '%s\n' '# Written by ledposter-sys ssh: the full drop-in was rejected. Key-only.' \
+          'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' > "$conf"
+      fi
+      die "sshd rejected the new config; kept the previous key-only drop-in, ssh not reloaded"
+    fi
+    rm -f "$conf.old"
     systemctl reload-or-restart ssh.service
     say "ssh: key-only, $(printf '%s\n' "$keys" | grep -c .) key(s)"
   else
-    rm -f /etc/ssh/ledposter_authorized_keys
+    rm -f "$ssh_etc/ledposter_authorized_keys"
     systemctl stop ssh.service ssh.socket 2> /dev/null || true
     say "ssh: disabled"
   fi
@@ -188,29 +213,54 @@ layout() {
 
 # Wi-Fi profiles live in $state/nm (bind-mounted on NetworkManager's dir). A power cut while NM
 # rewrites one leaves garbage and the wall boots with no Wi-Fi, so every good profile is copied
-# to $state/nm-backup at boot and copied back when it is missing or garbled. Runs before NM.
-# ponytail: "good" = first line is [connection]; damage further in is not caught.
+# to $state/nm-backup at boot and copied back when it is garbled, or when no good profile is
+# left at all. A profile missing while others are fine was deleted on purpose: its backup goes.
+# Runs before NM. ponytail: "good" = first line is [connection]; damage further in is not caught.
 nm_ok() { [ -f "$1" ] && [ ! -L "$1" ] && [ "$(head -n 1 "$1" 2> /dev/null)" = "[connection]" ]; }
+# cp to a hidden temp name in the target dir, then rename: a power cut leaves the old file or the new.
+nm_copy() {
+  t="$(dirname "$2")/.$(basename "$2").tmp"
+  if cp -p "$1" "$t" && mv "$t" "$2"; then return 0; fi
+  rm -f "$t"
+  say "could not copy $1 to $2"
+  return 1
+}
 nm_guard() {
   nm="$state/nm" bak="$state/nm-backup"
   [ -d "$nm" ] && [ ! -L "$nm" ] || return 0
   root_dir "$bak"
   chmod 700 "$bak"  # profiles hold the Wi-Fi password
+  any=no
+  for f in "$nm"/*.nmconnection; do
+    if nm_ok "$f"; then any=yes; break; fi
+  done
   for f in "$bak"/*.nmconnection; do
     nm_ok "$f" || continue
     n="$nm/$(basename "$f")"
     if [ -L "$n" ]; then say "$n is a symlink; leaving it"; continue; fi
-    nm_ok "$n" || { say "Wi-Fi profile $(basename "$f") missing or garbled: restoring the backup"; cp -p "$f" "$n"; }
+    if [ -e "$n" ]; then
+      nm_ok "$n" && continue
+      say "Wi-Fi profile $(basename "$f") garbled: restoring the backup"
+    elif [ "$any" = no ]; then
+      say "no good Wi-Fi profile left: restoring $(basename "$f") from the backup"
+    else
+      say "Wi-Fi profile $(basename "$f") was deleted: dropping its backup"
+      rm -f "$f"
+      continue
+    fi
+    nm_copy "$f" "$n" || true
   done
   for f in "$nm"/*.nmconnection; do
-    if nm_ok "$f"; then cp -p "$f" "$bak/"; fi
+    if nm_ok "$f"; then nm_copy "$f" "$bak/$(basename "$f")" || true; fi
   done
+  sync
 }
 
 boot() {
   if ! data_present; then say "$data is not there (unmounted?): nothing to restore"; exit 0; fi
   layout
-  nm_guard
+  # In a subshell so not even root_dir's die stops the boot: the hostname must still be restored.
+  ( nm_guard ) || say "the Wi-Fi profile guard failed; booting on"
   if [ -s "$state/hostname" ]; then
     name="$(head -n 1 "$state/hostname")"
     [ "$(hostname)" = "$name" ] || set_hostname "$name"
