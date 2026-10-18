@@ -313,7 +313,8 @@ struct Settings {
   AutoCurve curve;
   double smoothing_s;
   int preview_fps;
-  int max_fps;  // redraws per second at most (art and effects); overlays and streams are not capped
+  int max_fps;  // redraws per second at most (art and effects); overlays and streams are not capped.
+                // Default 60: at 15 and 30 the panels flickered visibly more (by eye, 2026-10-17)
   StreamConfig stream;
 };
 
@@ -346,7 +347,7 @@ static Settings load_settings(YAML::Node cfg) {
   check(s.preview_fps >= 1 && s.preview_fps <= 30, "engine.preview_fps must be 1 to 30");
   // On a Pi 3B every frame written disturbs the panel refresh (shared memory bus): fewer
   // frames, less visible flicker, choppier motion. 30 = the art's own rate.
-  s.max_fps = cfg["engine"]["max_fps"].as<int>(30);
+  s.max_fps = cfg["engine"]["max_fps"].as<int>(60);
   check(s.max_fps >= 1 && s.max_fps <= 120, "engine.max_fps must be 1 to 120");
   YAML::Node d = cfg["ddp"], e = cfg["e131"], sm = cfg["stream"];
   StreamConfig &t = s.stream;
