@@ -8,12 +8,14 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <memory>
 #include <numeric>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "wall.h"
@@ -68,6 +70,16 @@ inline Clip open_clip(const std::string &dir, int w, int h, const std::vector<in
 #endif
   c.data.reset(static_cast<const uint8_t *>(p),
                [want](const uint8_t *q) { munmap(const_cast<uint8_t *>(q), want); });
+  // WILLNEED alone still left the first pass at 36-58fps instead of 60 (faults on the frame
+  // loop): touch every page from a side thread, which reads the card ~4x faster than 60fps plays.
+  // ponytail: one budget for the engine's life, so a library bigger than RAM is not read in
+  // whole and does not push the playing clip out; per-mode budgets if long playlists stutter.
+  static std::atomic<int64_t> budget{256 << 20};
+  if (budget.fetch_sub(int64_t(want)) >= int64_t(want))
+    std::thread([d = c.data, want] {
+      volatile uint8_t sink = 0;
+      for (size_t i = 0; i < want; i += 4096) sink = sink + d.get()[i];
+    }).detach();
   return c;
 }
 
