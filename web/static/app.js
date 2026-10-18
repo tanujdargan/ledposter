@@ -652,7 +652,46 @@ function bindSettings() {
   $("#e131-enabled").checked = settings.e131.enabled; $("#e131-universe").value = settings.e131.start_universe;
   $("#stream-gamma").value = settings.stream.apply_gamma ? "1" : "0";
   renderPanels();
+  renderArrange();
 }
+/* Arrange panels from what the panel-id pattern shows. Each grid spot is a place on the wall
+   (canvas col/row). Panel k showing in spot P means chain panel k physically sits at P. Its
+   arrow is drawn up after the configured rotation r; if the panel is really turned R, it
+   shows turned R - r clockwise, so the arrow's clockwise angle a gives R = r + a. */
+const ARROWS = [["0", "↑ up"], ["90", "→ right"], ["180", "↓ down"], ["270", "← left"]];
+function renderArrange() {
+  const ps = settings.matrix.panels, cols = Math.max(...ps.map((p) => p.col)) + 1, rows = Math.max(...ps.map((p) => p.row)) + 1;
+  const grid = $("#arr-grid");
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  const cells = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const here = ps.findIndex((p) => p.col === c && p.row === r);
+    const num = h("select", { class: "input", "aria-label": `Number shown at column ${c + 1}, row ${r + 1}` },
+      h("option", { value: "" }, "empty"), ...ps.map((_, i) => { const o = h("option", { value: i }, `#${i + 1}`); o.selected = i === here; return o; }));
+    const arrow = h("select", { class: "input", "aria-label": `Arrow direction at column ${c + 1}, row ${r + 1}` },
+      ...ARROWS.map(([v, t]) => h("option", { value: v }, t)));
+    num.dataset.col = c; num.dataset.row = r; num.arrow = arrow;
+    cells.push(h("div", { class: "card", style: "padding:8px;display:grid;gap:6px" }, num, arrow));
+  }
+  grid.replaceChildren(...cells);
+}
+$("#arr-show").onclick = async () => {
+  try { await api("/api/mode", { method: "POST", body: { mode: "pattern", pattern: "panel-id" } }); toast("Numbers are on the wall"); }
+  catch (e) { toast(e.message, true); }
+};
+$("#arr-apply").onclick = () => {
+  const ps = settings.matrix.panels, seen = new Map();
+  for (const sel of $("#arr-grid").querySelectorAll("select[data-col]")) {
+    if (sel.value === "") continue;
+    const k = +sel.value;
+    if (seen.has(k)) { toast(`#${k + 1} is picked in two spots`, true); return; }
+    seen.set(k, { col: +sel.dataset.col, row: +sel.dataset.row, a: +sel.arrow.value });
+  }
+  const missing = ps.map((_, i) => i).filter((i) => !seen.has(i));
+  if (missing.length) { toast(`Not placed: ${missing.map((i) => `#${i + 1}`).join(", ")}`, true); return; }
+  settings.matrix.panels = ps.map((p, i) => { const s = seen.get(i); return { col: s.col, row: s.row, rotate: ((p.rotate || 0) + s.a) % 360 }; });
+  putSettings("Arrangement saved");
+};
 function renderPanels() {
   $("#m-panels").replaceChildren(h("div", { class: "grid4", style: "font-size:13px;color:var(--muted);margin-bottom:4px" }, h("span", {}, "#"), h("span", {}, "col"), h("span", {}, "row"), h("span", {}, "rotate")),
     ...settings.matrix.panels.map((pn, i) => h("div", { class: "grid4", style: "margin-bottom:6px;align-items:center" }, h("span", { class: "num" }, String(i + 1)),

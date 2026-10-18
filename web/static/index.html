@@ -256,6 +256,13 @@
     <div class="list" id="token-list"></div>
     <p class="help">For Home Assistant, scripts and the game hook. Sent as <span class="mono">Authorization: Bearer</span>.</p>
     <div class="section-title">Matrix</div>
+    <div class="card" id="arrange">
+      <b>Arrange panels</b>
+      <p class="help">1. Show the numbers. 2. For each spot below (laid out like the wall, seen from the front), pick the number you see there and the way its arrow points. 3. Apply: every arrow should then point up.</p>
+      <button class="btn block" id="arr-show">Show panel numbers on the wall</button>
+      <div id="arr-grid" style="display:grid;gap:8px;margin:12px 0"></div>
+      <button class="btn primary block" id="arr-apply">Apply arrangement</button>
+    </div>
     <div class="card">
       <label class="slider"><span class="top"><b>Refresh rate</b><span class="num" id="hz-val">–</span></span>
         <input type="range" id="refresh" min="60" max="260" step="10" aria-label="Refresh rate cap"></label>
