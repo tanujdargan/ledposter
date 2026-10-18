@@ -44,10 +44,10 @@ BUILD_USER=ledwall-build  # compiles and pip-installs releases; owns nothing tha
 . "$SRC/system/packages.sh"
 # Not needed on a headless wall; each one costs boot time or writes to the card.
 DISABLE_UNITS="bluetooth.service hciuart.service triggerhappy.service ModemManager.service apt-daily.timer
-  apt-daily-upgrade.timer man-db.timer dphys-swapfile.service e2scrub_all.timer"
+  apt-daily-upgrade.timer man-db.timer dphys-swapfile.service e2scrub_all.timer ledposter-wifi.timer"
 ENABLE_UNITS="ledposter-boot.service ledposter-engine.service ledposter-web.service ledposter-firewall.service
   ledposter-ssh.service ledposter-update.service ledposter-maintenance.timer ledposter-maintenance-resume.service
-  ledposter-net-rollback.service ledposter-wifi.timer avahi-daemon.service NetworkManager.service"
+  ledposter-net-rollback.service ledposter-wifi.service avahi-daemon.service NetworkManager.service"
 
 usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 

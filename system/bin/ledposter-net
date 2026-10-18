@@ -9,10 +9,15 @@
 #                            and at boot while the note exists (a reboot inside the window).
 #   ledposter-net hosts      rewrite the 127.0.1.1 line of /etc/hosts with the current hostname
 #   ledposter-net wifi       if wlan0 has no connection at all, bring a saved Wi-Fi profile up.
-#                            Run by ledposter-wifi.timer every 2 minutes. NetworkManager gives
-#                            up on a profile after one failed WPA handshake ("no secrets": it has
-#                            no one to ask for the password) and never retries it: one router
-#                            hiccup at boot left the wall off Wi-Fi until a power cycle.
+#                            NetworkManager gives up on a profile after one failed WPA handshake
+#                            ("no secrets": it has no one to ask for the password) and never
+#                            retries it: one router hiccup at boot left the wall off Wi-Fi until
+#                            a power cycle.
+#   ledposter-net wifi-watch runs `wifi` whenever wlan0 is not up, checked every 2 minutes. The
+#                            long-running ledposter-wifi.service: a timer would start a unit every
+#                            2 minutes, and each unit start (even `systemd-run true`) stalled the
+#                            panel refresh for ~0.17s, a visible flash; so does an nmcli call,
+#                            less. Reading operstate costs nothing.
 set -eu
 
 data="${LEDPOSTER_DATA:-/data}"
@@ -70,8 +75,20 @@ case "${1:-}" in
       if nmcli -w 45 connection up "$con" > /dev/null 2>&1; then echo "ledposter-net: '$con' is up"; exit 0; fi
     done
     ;;
+  wifi-watch)
+    # LEDPOSTER_WIFI_ROUNDS: tests only, stop after that many checks.
+    every="${LEDPOSTER_WIFI_EVERY:-120}" state="${LEDPOSTER_WLAN_OPERSTATE:-/sys/class/net/wlan0/operstate}"
+    rounds="${LEDPOSTER_WIFI_ROUNDS:--1}"
+    sleep "${LEDPOSTER_WIFI_FIRST:-90}"  # NetworkManager's own first attempts come first
+    while [ "$rounds" != 0 ]; do
+      # up also while the setup hotspot runs; no wlan0 at all: nothing to rejoin
+      [ ! -e "$state" ] || [ "$(cat "$state")" = up ] || sh "$0" wifi || true
+      rounds=$((rounds - 1))
+      [ "$rounds" = 0 ] || sleep "$every"
+    done
+    ;;
   *)
-    echo "usage: ledposter-net rollback|hosts|wifi" >&2
+    echo "usage: ledposter-net rollback|hosts|wifi|wifi-watch" >&2
     exit 2
     ;;
 esac

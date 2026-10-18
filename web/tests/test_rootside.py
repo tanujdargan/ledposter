@@ -44,8 +44,9 @@ def world(tmp_path):
     env = dict(os.environ, PATH=f"{stubs}:{os.environ['PATH']}", LEDPOSTER_DATA=str(data), LEDPOSTER_SSH_ETC=str(etc_ssh),
                LEDPOSTER_CMDLINE=str(tmp_path / "cmdline.txt"))
 
-    def run(*argv, script=SYS):
-        r = subprocess.run(["sh", script, *argv], env=env, capture_output=True, text=True, timeout=30)
+    def run(*argv, script=SYS, extra=None):
+        r = subprocess.run(["sh", script, *argv], env={**env, **(extra or {})}, capture_output=True, text=True,
+                           timeout=30)
         return r.returncode, r.stdout + r.stderr
 
     def calls():
@@ -315,3 +316,16 @@ def test_service_accounts_are_ledwall_not_the_login_user():
     install = open(os.path.join(system, "install.sh")).read()
     assert "\nSVC_USER=ledwall\n" in install and "\nBUILD_USER=ledwall-build " in install
     assert updater.SERVICE_USER == "ledwall" and updater.BUILD_USER == "ledwall-build"
+
+
+def test_wifi_watch_only_calls_nmcli_when_wlan0_is_down(world, tmp_path):
+    """The watch reads operstate; nmcli (and so the rejoin) runs only when wlan0 is not up."""
+    state = tmp_path / "operstate"
+    env = {"LEDPOSTER_WLAN_OPERSTATE": str(state), "LEDPOSTER_WIFI_EVERY": "0", "LEDPOSTER_WIFI_FIRST": "0",
+           "LEDPOSTER_WIFI_ROUNDS": "3"}
+    state.write_text("up\n")
+    assert world.run("wifi-watch", script=NET, extra=env)[0] == 0
+    assert not any(c.startswith("nmcli") for c in world.calls())
+    state.write_text("down\n")
+    assert world.run("wifi-watch", script=NET, extra=env)[0] == 0
+    assert sum(c == "nmcli -t -f DEVICE,STATE device status" for c in world.calls()) == 3
