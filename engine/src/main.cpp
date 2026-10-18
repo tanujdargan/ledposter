@@ -879,7 +879,13 @@ int main(int argc, char **argv) {
             for (auto &v : frame.rgb) v = st.s.lut[v];
         } else {
           if (st.mode_t0 < 0) st.mode_t0 = t;
-          due = std::max(st.mode_t0 + st.mode.render(frame, t - st.mode_t0), t + 1000 / st.s.max_fps);
+          // The cap is a fixed grid of max_fps slots from the mode's start, not "period after this
+          // frame": a frame held back by the swap then does not push every later one back too
+          // (that ran 60 as 54).
+          const int64_t m = t - st.mode_t0, f = st.s.max_fps;
+          int64_t k = m * f / 1000 + 1;
+          while (k * 1000 / f <= m) k++;  // slot starts are rounded down to whole ms
+          due = std::max(st.mode_t0 + st.mode.render(frame, m), st.mode_t0 + k * 1000 / f);
           if (st.mode.gamma)
             for (auto &v : frame.rgb) v = st.s.lut[v];
         }

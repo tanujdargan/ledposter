@@ -38,7 +38,7 @@ docs/      spec, this file, protocol.md, ui-references.md, DEVIATIONS.md
 ## Media cache (written by the web app's transcoder, read by the engine)
 
 - `/data/media/<id>/frames.rgb` holds raw RGB24 frames back to back, `w*h*3` bytes each. `w`/`h` is the logical canvas (128x192 on the full wall).
-- `/data/media/<id>/meta.json` contains `{"w":128,"h":192,"durations_ms":[...],"fps_cap":30, ...item settings}`.
+- `/data/media/<id>/meta.json` contains `{"w":128,"h":192,"durations_ms":[...],"fps_cap":60, ...item settings}`.
 - `/data/media/<id>/thumb.png` is a thumbnail at wall resolution.
 - Frames are stored **already gamma corrected and dithered**. The engine never decodes media formats in the frame loop. It reads raw frames only (mmap or buffered read).
 

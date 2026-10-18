@@ -45,7 +45,7 @@ The engine owns the matrix, renders a 128 x 192 RGB canvas at a steady frame rat
 **Media pipeline**
 
 - Accepts GIF, APNG, PNG, JPG, WebP, MP4, WebM, MOV uploads up to 200MB
-- Transcodes on upload with ffmpeg into a cached raw frame file: 128 x 192 RGB24, original frame timings kept, capped at 30fps (about 74KB per frame)
+- Transcodes on upload with ffmpeg into a cached raw frame file: 128 x 192 RGB24, original frame timings kept, capped at 60fps (about 74KB per frame)
 - Scaling modes per item: `fit` (letterbox, black bars), `fill` (crop to fill), `stretch`, plus filter `smooth` (area) or `pixel` (nearest)
 - Per-item crop and position, set from the web app
 - Gamma correction and optional ordered dithering applied at transcode time

@@ -50,16 +50,16 @@ def test_gif_delays_preserved(gif, tmp_path):
     assert meta["filter"] == "smooth"
 
 
-def test_1080p_capped_to_30fps(tmp_path):
+def test_1080p_capped_to_60fps(tmp_path):
     src = tmp_path / "hd.mp4"
-    ffmpeg("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=60:d=2", "-c:v", "libx264",
+    ffmpeg("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=120:d=2", "-c:v", "libx264",
            "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(src))
     meta = transcode(str(src), tmp_path / "out")
     check_size(tmp_path / "out")
     d = meta["durations_ms"]
-    assert len(d) == 60  # 120 source frames, every other one kept
+    assert len(d) == 120  # 240 source frames, every other one kept
     assert sum(d) == 2000
-    assert min(d) >= 33
+    assert min(d) >= 16
 
 
 def test_pixel_art_auto_pixel_and_exact_2x(tmp_path):

@@ -158,7 +158,7 @@ Brightness: `effective = min(brightness.user, auto)` where auto comes from the B
 | `--fps-cap N` | 30 | faster sources drop frames; total duration is kept |
 | `--w W --h H` | 128 192 | canvas size; use `--w 64 --h 64` for `single-panel.yaml` |
 
-Frame timings are kept (GIF delays, video timestamps). Stills are stored as one 10s frame. About 74KB per frame: a 30s 30fps clip is 66MB.
+Frame timings are kept (GIF delays, video timestamps). Stills are stored as one 10s frame. About 74KB per frame: a 30s 60fps clip is 133MB.
 
 ## Web app
 

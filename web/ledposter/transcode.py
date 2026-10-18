@@ -71,7 +71,7 @@ def _ffmpeg_error(log):
 
 
 def transcode(src_path, out_dir, *, w=128, h=192, scale="fit", filter=None, crop=None,
-              position=(0.5, 0.5), gamma=2.2, dither=False, fps_cap=30):
+              position=(0.5, 0.5), gamma=2.2, dither=False, fps_cap=60):
     if scale not in ("fit", "fill", "stretch"):
         raise ValueError(f"scale must be fit, fill or stretch, not {scale!r}")
     if filter not in (None, "smooth", "pixel"):
@@ -211,7 +211,7 @@ def main(argv=None):
     p.add_argument("--position", default="0.5,0.5", help="anchor x,y in 0..1 for fit/fill")
     p.add_argument("--gamma", type=float, default=2.2)
     p.add_argument("--dither", action="store_true")
-    p.add_argument("--fps-cap", type=int, default=30)
+    p.add_argument("--fps-cap", type=int, default=60)
     a = p.parse_args(argv)
     try:
         m = transcode(a.src, a.out_dir, w=a.w, h=a.h, scale=a.scale, filter=a.filter,
