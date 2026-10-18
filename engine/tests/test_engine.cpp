@@ -440,6 +440,23 @@ static void test_redraw() {
   assert(mb.replies.size() == 1 && mb.replies[0].second.find("\"ok\":true") != std::string::npos);
 }
 
+static void test_push_changed() {
+  Frame f(4, 2);
+  Shadow sh;
+  std::vector<size_t> got;
+  auto set = [&](size_t i, const uint8_t *) { got.push_back(i); };
+  assert(push_changed(f, 80, sh, set) == 8);  // unknown canvas: everything
+  got.clear();
+  assert(push_changed(f, 80, sh, set) == 0);  // same picture: nothing
+  f.set(3, 1, 9, 9, 9);
+  assert(push_changed(f, 80, sh, set) == 1 && got == std::vector<size_t>{7});
+  assert(push_changed(f, 50, sh, set) == 8);  // brightness is baked into the canvas
+  Shadow other;                              // the second canvas has its own contents
+  assert(push_changed(f, 50, other, set) == 8 && push_changed(f, 50, other, set) == 0);
+  sh.pct = -1;  // after a power-off Fill
+  assert(push_changed(f, 50, sh, set) == 8);
+}
+
 int main(int argc, char **argv) {
   // Spec snake: chain index 0 is top-left and sits at the right end of the strip.
   Layout L(64, kSnake);
@@ -513,6 +530,7 @@ int main(int argc, char **argv) {
   test_double_press();
   test_privs();
   test_redraw();
+  test_push_changed();
 
   if (argc > 1) {
     draw_pattern("panel-id", f, L, 0, 0);

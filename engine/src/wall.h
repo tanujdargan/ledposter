@@ -35,6 +35,32 @@ struct Point {
   int16_t x, y;  // not int: halves the lut the frame loop walks every frame (L2 on a Pi 3B)
 };
 
+// What one of the library's two canvases holds, so a frame only rewrites the pixels that
+// changed. SetPixel goes through the library's pixel map and read-modify-writes every bit
+// plane: on a Pi 3B that traffic evicts the refresh thread's buffer from L2 and shows as
+// flicker. The canvases alternate (SwapOnVSync hands back the other one), so each needs its
+// own shadow, and brightness is baked in as pixels are set: a new pct rewrites everything.
+struct Shadow {
+  std::vector<uint8_t> rgb;
+  int pct = -1;  // -1: unknown contents, rewrite all
+};
+// Calls set(pixel_index, rgb) for each pixel of f that differs from what sh says the canvas
+// holds, and records it. Returns how many were set.
+template <class Set>
+inline size_t push_changed(const Frame &f, int pct, Shadow &sh, Set set) {
+  const bool all = sh.pct != pct || sh.rgb.size() != f.rgb.size();
+  if (all) sh.rgb.assign(f.rgb.size(), 0), sh.pct = pct;
+  size_t n = 0;
+  for (size_t i = 0; i < f.rgb.size(); i += 3) {
+    const uint8_t *c = &f.rgb[i];
+    uint8_t *h = &sh.rgb[i];
+    if (!all && c[0] == h[0] && c[1] == h[1] && c[2] == h[2]) continue;
+    h[0] = c[0], h[1] = c[1], h[2] = c[2];
+    set(i / 3, c), n++;
+  }
+  return n;
+}
+
 // Maps the logical canvas (panels on a col/row grid) to the coordinates
 // rpi-rgb-led-matrix exposes for a chain: one strip chain_length*size wide,
 // with chain index 0 (the panel plugged into the Pi) at the RIGHT end

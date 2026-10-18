@@ -47,6 +47,8 @@ struct Display {
   rgb_matrix::RGBMatrix *matrix;
   rgb_matrix::FrameCanvas *off;
   const Layout &L;
+  rgb_matrix::FrameCanvas *canvas[2] = {nullptr, nullptr};  // the two that alternate
+  Shadow shadow[2];
 
   // user, group: what the library drops root to once the GPIO is set up.
   Display(const YAML::Node &m, const Layout &L, const std::string &, const std::string &user,
@@ -95,16 +97,17 @@ struct Display {
   // pct: output brightness after the limiter. The library scales each value
   // by it as the pixel is set, so it only affects this frame.
   void show(const Frame &f, int pct) {
+    int k = off == canvas[0] ? 0 : off == canvas[1] ? 1 : !canvas[0] ? 0 : 1;
+    canvas[k] = off;
     if (pct <= 0) {
       off->Fill(0, 0, 0);  // power off, or brightness 0 (the library's minimum is 1%)
+      shadow[k].pct = -1;  // rewrite all once the picture comes back
     } else {
       off->SetBrightness(pct);
-      for (int i = 0; i < L.width * L.height; i++) {
+      push_changed(f, pct, shadow[k], [&](size_t i, const uint8_t *c) {
         const Point p = L.lut[i];
-        if (p.x < 0) continue;
-        const uint8_t *c = &f.rgb[size_t(i) * 3];
-        off->SetPixel(p.x, p.y, c[0], c[1], c[2]);
-      }
+        if (p.x >= 0) off->SetPixel(p.x, p.y, c[0], c[1], c[2]);
+      });
     }
     off = matrix->SwapOnVSync(off);
   }
