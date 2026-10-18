@@ -4,10 +4,10 @@ A set of original pixel scenes and generative loops drawn at the wall's native 1
 
 ```
 art/build.py          render the pieces / download the paintings / build personal media
-art/scenes.py         pixel scenes (flat palettes, lossless GIF)
+art/scenes.py         pixel scenes (flat palettes)
 art/ambient.py        generative pieces (lossless RGB H.264)
-art/fun.py            fun pixel pieces: pong, block drop, cat nap, pizza, rocket... (lossless GIF)
-art/claude.py         Claude spark and Clawd pieces (lossless GIF)
+art/fun.py            fun pixel pieces: pong, block drop, cat nap, pizza, rocket...
+art/claude.py         Claude spark and Clawd pieces
 art/lib.py            shared helpers: canvas, drawing, loopable noise, 3x5 font, encoder, wall checks
 art/paintings.json    the paintings: URL, title, artist, year, licence, source page, crop
 art/personal.py       optional: your own images/GIFs/clips -> native 128x192 loops
@@ -48,7 +48,8 @@ These rules come from the real panels (gamma 2.2, 7 PWM bits, viewed from about 
 - **Dark tones vanish.** After gamma, a channel under about 40 lands on PWM step 0 or 1. Between 40 and 70 it gets only a few steps, so it bands and can shimmer. Visible colours keep their main channel at 70 or above. Skies are drawn as deliberate bands, not smooth dark gradients.
 - **Avoid big bright fields.** White draws the most current. The scenes stay under about 0.18 mean LED drive (1.0 is a full white wall).
 - **Seamless loops.** Every frame is a pure function of the loop phase. Each motion runs a whole number of cycles per loop, and the noise lattices wrap in time. Life fades out and back in through black. `build.py` reports `seam`: the last-to-first frame step divided by the largest step inside the loop. A value of 1 or less means the wrap is no bigger than any other frame step.
-- **Lossless.** Scenes use their own palette (256 colours or fewer) and encode as exact GIFs at 25 fps. Smooth pieces use RGB H.264 with qp 0 at 30 fps, with no chroma subsampling to smear pixel edges. `build.py` decodes each file and refuses to write it unless it matches the rendered frames exactly.
+- **60 fps.** Fewer frames flickered visibly more on the wall. Every piece is a pure function of the loop phase, so the rate is free; Life is the exception (discrete generations) and keeps 25 generations a second, each held for a few frames.
+- **Lossless.** Every piece is RGB H.264 with qp 0 at 60 fps (GIF delays are whole centiseconds, so 60 fps is not a GIF rate), with no chroma subsampling to smear pixel edges. `build.py` decodes each file and refuses to write it unless it matches the rendered frames exactly.
 
 ## Pieces
 
