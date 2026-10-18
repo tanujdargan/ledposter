@@ -6,9 +6,9 @@ matrix:
   panel_size: 64
   gpio_slowdown: 2                    # raise if you see flicker/garbage, lower for refresh rate
   pwm_bits: 6                         # 6, not 7: the refresh buffer must stay in the Pi 3B L2 (7 bits: 4x the deep refresh stalls on motion)
-  pwm_dither_bits: 1                  # dither 2 flickered visibly in dim tones
+  pwm_dither_bits: 2                  # with the 130Hz cap below: least visible flicker by eye (2026-10-17)
   pwm_lsb_nanoseconds: 100
-  limit_refresh_rate_hz: 100          # steady cap: unlimited it swings 103-155Hz under load, which flickers
+  limit_refresh_rate_hz: 130          # steady cap; by eye: uncapped (130-205Hz, uneven) and 11-bit/70Hz both flicker worse
   disable_busy_waiting: true          # sleep out the refresh cap, don't spin: spinning at RT 99 gets RT-throttled ~once a second
   show_refresh_rate: false            # true prints refresh Hz to the terminal
   # Chain order: the first entry is the panel plugged into the bonnet.
@@ -37,6 +37,7 @@ brightness:
 
 sensors:
   bh1750:
+    enabled: false  # true only with a BH1750 fitted: retrying a missing one flickered the panels
     i2c_bus: 1      # /dev/i2c-1 (GPIO2 SDA, GPIO3 SCL)
     address: 0x23   # ADDR pin low; 0x5c if ADDR is high
     poll_ms: 500

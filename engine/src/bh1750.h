@@ -51,7 +51,10 @@ inline double bh1750_lux(uint8_t hi, uint8_t lo) { return ((hi << 8) | lo) / 1.2
 // Polls the sensor every poll_ms. The reading is smoothed in log(lux) (so the
 // curve output moves smoothly) with time constant tau_s. A missing sensor or a
 // read error is logged once; lux and smoothed go NaN, so auto brightness falls
-// back to the user setting, and it retries every 5s. The bus is opened in the
+// back to the user setting, and it retries once a minute. Disabled (the default:
+// sensors.bh1750.enabled), it never touches I2C: on the 6-panel wall the retries
+// against a sensor that was never fitted were the biggest cause of panel flicker
+// (2026-10-17, A/B by eye). The bus is opened in the
 // constructor, before the matrix library drops root; reopening it after an
 // error needs the i2c group. Sim builds have no I2C: set_fake() stands in for
 // the sensor (NaN = missing).
@@ -60,8 +63,8 @@ struct LightSensor {
   std::atomic<double> tau_s;                    // reload_config can change it
   std::atomic<bool> ok{false};
 
-  LightSensor(int bus, int addr, int poll_ms, double tau)
-      : tau_s(tau), bus(bus), addr(addr), poll_ms(poll_ms), th([this] { run(); }) {}
+  LightSensor(bool enabled, int bus, int addr, int poll_ms, double tau)
+      : tau_s(tau), enabled(enabled), bus(bus), addr(addr), poll_ms(poll_ms), th([this] { run(); }) {}
   ~LightSensor() {
     {
       std::lock_guard<std::mutex> l(mu);
@@ -90,12 +93,13 @@ struct LightSensor {
   }
 
   // Sensor thread only from here on.
+  const bool enabled;
   const int bus, addr, poll_ms;
   std::atomic<double> fake{NAN};
   std::mutex mu;
   std::condition_variable cv;
   bool stop = false, poked = false;
-  int fd = open_bus();
+  int fd = enabled ? open_bus() : -1;
   bool ready = false;  // fd set up for continuous reads
   std::thread th;  // last: starts after everything above is set up
 
@@ -117,6 +121,10 @@ struct LightSensor {
 
   bool read(double &v, std::string &why) {
 #ifdef LEDPOSTER_I2C
+    if (!enabled) {
+      why = "off (sensors.bh1750.enabled)";
+      return false;
+    }
     if (!ready) {
       const std::string dev = "/dev/i2c-" + std::to_string(bus);
       if (fd < 0) fd = open_bus();
@@ -170,6 +178,6 @@ struct LightSensor {
                   why.c_str());
         lux = NAN, smoothed = NAN, ok = false, logged = true;
       }
-    } while (pause(ok ? poll_ms : 5000));
+    } while (pause(ok ? poll_ms : 60000));
   }
 };

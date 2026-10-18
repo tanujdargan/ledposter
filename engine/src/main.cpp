@@ -559,7 +559,7 @@ int main(int argc, char **argv) {
   signal(SIGTERM, [](int) { g_stop = 1; });
   signal(SIGPIPE, SIG_IGN);  // a client hanging up must not kill the engine
 
-  LightSensor sensor(bh["i2c_bus"].as<int>(1), bh["address"].as<int>(0x23),
+  LightSensor sensor(bh["enabled"].as<bool>(false), bh["i2c_bus"].as<int>(1), bh["address"].as<int>(0x23),
                      bh["poll_ms"].as<int>(500), st.s.smoothing_s);
   Display display(m, layout, dump, user, group);
   fprintf(stderr, "canvas %dx%d, %zu panels, mode %s\n", layout.width, layout.height,

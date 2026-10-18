@@ -30,6 +30,15 @@ ReadWritePaths=/data
 PrivateTmp=yes
 ProtectHome=yes
 TimeoutStopSec=10
+# Off the panel refresh's way: never on core 3 (the matrix library's refresh thread; isolcpus
+# keeps it there too, this makes it explicit), and the lowest CPU and I/O priority, which
+# ffmpeg transcodes inherit. With the web app running the panels flickered visibly more (A/B
+# by eye, 2026-10-17).
+CPUAffinity=0-2
+Nice=19
+CPUSchedulingPolicy=batch
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 [Install]
 WantedBy=multi-user.target

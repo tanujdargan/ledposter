@@ -94,11 +94,11 @@ def test_refresh_slider_saves_the_cap_and_keeps_unlisted_matrix_keys(authed, eng
     old = time.time() - 5
     os.utime(path, (old, old))  # an old hand edit: the app reloads it
     s = authed.get("/api/settings").json()
-    s["matrix"].update(limit_refresh_rate_hz=130, pwm_dither_bits=2, pwm_lsb_nanoseconds=100)
+    s["matrix"].update(limit_refresh_rate_hz=110, pwm_dither_bits=1, pwm_lsb_nanoseconds=100)  # off the defaults
     r = authed.put("/api/settings", json=s)
     assert r.status_code == 200 and r.json()["restart_required"] is True
     m = yaml.safe_load(path.read_text())["matrix"]
-    assert (m["limit_refresh_rate_hz"], m["pwm_dither_bits"], m["disable_busy_waiting"]) == (130, 2, True)
+    assert (m["limit_refresh_rate_hz"], m["pwm_dither_bits"], m["disable_busy_waiting"]) == (110, 1, True)
     s["matrix"]["limit_refresh_rate_hz"] = 0  # "No cap"
     assert authed.put("/api/settings", json=s).status_code == 200
     assert yaml.safe_load(path.read_text())["matrix"]["limit_refresh_rate_hz"] == 0
