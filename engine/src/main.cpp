@@ -347,7 +347,7 @@ static Settings load_settings(YAML::Node cfg) {
   // On a Pi 3B every frame written disturbs the panel refresh (shared memory bus): fewer
   // frames, less visible flicker, choppier motion. 30 = the art's own rate.
   s.max_fps = cfg["engine"]["max_fps"].as<int>(30);
-  check(s.max_fps >= 1 && s.max_fps <= 60, "engine.max_fps must be 1 to 60");
+  check(s.max_fps >= 1 && s.max_fps <= 120, "engine.max_fps must be 1 to 120");
   YAML::Node d = cfg["ddp"], e = cfg["e131"], sm = cfg["stream"];
   StreamConfig &t = s.stream;
   t.ddp = d["enabled"].as<bool>(false), t.ddp_port = d["port"].as<int>(4048);

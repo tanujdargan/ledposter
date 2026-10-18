@@ -20,7 +20,8 @@
 namespace fx {
 
 constexpr int64_t kFrameMs = 33;  // ~30fps
-inline int64_t next_frame(int64_t t) { return (t / kFrameMs + 1) * kFrameMs; }
+// Effects animate from t, so they can redraw as often as wanted: engine.max_fps paces them.
+inline int64_t next_frame(int64_t t) { return t + 1; }
 
 // ---- helpers ----
 
