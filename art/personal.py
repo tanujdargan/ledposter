@@ -17,9 +17,10 @@ sources.json:
               "grade": {"black": 0.06, "gamma": 1.0, "contrast": 1.1, "saturation": 1.2,
                         "sharpen": 0.6, "gain": 1.0},
               "alive": {"seconds": 8, "zoom": 0.06, "focus": [x, y], "glow": 1.0,
-                        "ripple": true, "web": [x0, y0, x1, y1]},   # still: loop effects (output px)
+                        "ripple": false, "web": [x0, y0, x1, y1]},  # still: loop effects (output px)
               "grid": 8, "scale": 2,           # pixel: source pixels per art pixel, LEDs per art pixel
-              "dither": false}]}               # transcoder dither on upload
+              "dither": false,                 # transcoder dither on upload
+              "playlist": "..."}]}             # optional: this item's playlist instead of the top one
 """
 import json
 import os
@@ -205,7 +206,7 @@ def render_still(src, it):
             right = np.clip(1 - (W - 1 - XX) / 24, 0, 1) ** 2.5
             f += g * (np.array([200, 10, 30], np.float32) * (left * (0.35 + 0.65 * pulse))[..., None]
                       + np.array([20, 60, 220], np.float32) * (right * (1 - 0.65 * pulse))[..., None]) * 0.4
-        if al.get("ripple", True):  # spider-sense: three rings from the head, once per loop
+        if al.get("ripple", False):  # spider-sense: three rings from the head, once per loop (opt-in)
             for k in range(3):
                 t = (p - 0.55 - k * 0.05) / 0.3
                 if 0 <= t <= 1:
@@ -256,7 +257,7 @@ def build(out_dir, items_out):
             del items_out[k]
         st = wall_stats(arr)
         items_out[rel] = {"file": rel, "slug": it["slug"], "name": it["title"], "category": "personal",
-                          "playlist": cfg.get("playlist", "Personal"), "seconds": round(len(arr) / fps, 2),
+                          "playlist": it.get("playlist") or cfg.get("playlist", "Personal"), "seconds": round(len(arr) / fps, 2),
                           "frames": len(arr), "fps": fps, "about": it["url"],
                           "upload": {"filter": "pixel", "scale": "fit", "dither": bool(it.get("dither"))},
                           "stats": {k: round(v, 3) for k, v in st.items()}}
