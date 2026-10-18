@@ -313,6 +313,7 @@ struct Settings {
   AutoCurve curve;
   double smoothing_s;
   int preview_fps;
+  int max_fps;  // redraws per second at most (art and effects); overlays and streams are not capped
   StreamConfig stream;
 };
 
@@ -343,6 +344,10 @@ static Settings load_settings(YAML::Node cfg) {
   s.smoothing_s = c["smoothing_s"].as<double>(3);
   s.preview_fps = cfg["engine"]["preview_fps"].as<int>(5);
   check(s.preview_fps >= 1 && s.preview_fps <= 30, "engine.preview_fps must be 1 to 30");
+  // On a Pi 3B every frame written disturbs the panel refresh (shared memory bus): fewer
+  // frames, less visible flicker, choppier motion. 30 = the art's own rate.
+  s.max_fps = cfg["engine"]["max_fps"].as<int>(30);
+  check(s.max_fps >= 1 && s.max_fps <= 60, "engine.max_fps must be 1 to 60");
   YAML::Node d = cfg["ddp"], e = cfg["e131"], sm = cfg["stream"];
   StreamConfig &t = s.stream;
   t.ddp = d["enabled"].as<bool>(false), t.ddp_port = d["port"].as<int>(4048);
@@ -383,14 +388,14 @@ struct State {
 };
 
 // A config section as text, to spot changes that need a restart. The live
-// settings in those sections (engine.preview_fps, button.cycle,
+// settings in those sections (engine.preview_fps, engine.max_fps, button.cycle,
 // button.skip_playlist_items) are left out.
 static std::string yaml_at(const YAML::Node &cfg, const char *key) {
   const YAML::Node n = cfg[key];
   if (!n) return "";
   YAML::Node c = YAML::Clone(n);
   if (c.IsMap())
-    for (const char *live : {"preview_fps", "cycle", "skip_playlist_items"}) c.remove(live);
+    for (const char *live : {"preview_fps", "max_fps", "cycle", "skip_playlist_items"}) c.remove(live);
   return YAML::Dump(c);
 }
 
@@ -874,7 +879,7 @@ int main(int argc, char **argv) {
             for (auto &v : frame.rgb) v = st.s.lut[v];
         } else {
           if (st.mode_t0 < 0) st.mode_t0 = t;
-          due = st.mode_t0 + st.mode.render(frame, t - st.mode_t0);
+          due = std::max(st.mode_t0 + st.mode.render(frame, t - st.mode_t0), t + 1000 / st.s.max_fps);
           if (st.mode.gamma)
             for (auto &v : frame.rgb) v = st.s.lut[v];
         }
