@@ -117,7 +117,7 @@ def grade(img, g):
 
 def render_clip(src, it):
     sw, sh, fps = probe(src)
-    fps = min(30, round(fps) or 10)
+    fps = min(60, round(fps) or 10)
     trim = []
     if it.get("trim"):
         trim = ["-ss", str(it["trim"][0]), "-to", str(it["trim"][1])]
@@ -148,7 +148,7 @@ def render_pixel(src, it):
     """Pixel art: sample each art pixel's centre (nearest), key the background, then place it on the
     canvas at a whole-number scale (`scale`, default 1) so every art pixel stays a crisp block."""
     sw, sh, fps = probe(src)
-    fps = min(30, round(fps) or 10)
+    fps = min(60, round(fps) or 10)
     g, k = it["grid"], it.get("scale", 1)
     nw, nh = sw // g, sh // g
     frames = decode(src, f"fps={fps},scale={nw}:{nh}:flags=neighbor", nw, nh)
@@ -182,7 +182,7 @@ def render_still(src, it):
     if it.get("key"):
         hi = key_out(hi, it["key"], it.get("key_tol", 40), it.get("key_to"))
     fx, fy = al.get("focus", [W / 2, H / 2])
-    seconds, fps = al.get("seconds", 8), 30
+    seconds, fps = al.get("seconds", 8), 60
     n = seconds * fps
     # supersampled output grid, in output pixel units
     sy, sx = np.mgrid[0:hh, 0:hw].astype(np.float32) / SS + 0.5 / SS

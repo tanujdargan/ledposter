@@ -204,7 +204,7 @@ def dissolve_order(name):
 
 # ---------------------------------------------------------------------------------------------
 
-@piece("claude-spark", "Claude Spark", "claude", seconds=10, fps=25,
+@piece("claude-spark", "Claude Spark", "claude", seconds=10, fps=60,
        blurb="The warm Claude spark, slowly swaying and breathing inside its glow.")
 def claude_spark(n):
     stars = starfield("claude-spark/stars", 46)
@@ -225,7 +225,7 @@ def claude_spark(n):
         yield f
 
 
-@piece("claude-thinking", "Claude Thinking", "claude", seconds=8, fps=25,
+@piece("claude-thinking", "Claude Thinking", "claude", seconds=8, fps=60,
        blurb="The spark thinking: its rays light up in turn like a loading spinner.")
 def claude_thinking(n):
     stars = starfield("claude-thinking/stars", 30)
@@ -257,7 +257,7 @@ def claude_thinking(n):
         yield f
 
 
-@piece("clawd-walk", "Clawd Takes a Walk", "claude", seconds=8, fps=25,
+@piece("clawd-walk", "Clawd Takes a Walk", "claude", seconds=8, fps=60,
        blurb="Clawd, the Claude Code mascot, strolls across the wall under a spark sun.")
 def clawd_walk(n):
     stars = starfield("clawd-walk/stars", 40, 0, 120)
@@ -286,7 +286,7 @@ def clawd_walk(n):
         yield f
 
 
-@piece("clawd-wave", "Clawd Says Hi", "claude", seconds=6, fps=25,
+@piece("clawd-wave", "Clawd Says Hi", "claude", seconds=6, fps=60,
        blurb="A big Clawd waves hello from a speech bubble, blinking now and then.")
 def clawd_wave(n):
     stars = starfield("clawd-wave/stars", 36)
@@ -338,7 +338,7 @@ def code_line(f, s, x, y, upto=None):
         tx(f, s, x, y, GREY)
 
 
-@piece("clawd-terminal", "Clawd at the Terminal", "claude", seconds=8, fps=25,
+@piece("clawd-terminal", "Clawd at the Terminal", "claude", seconds=8, fps=60,
        blurb="Clawd hammers away at a keyboard while code scrolls up a little terminal.")
 def clawd_terminal(n):
     r = rng("clawd-terminal/keys")
@@ -401,7 +401,7 @@ SESSION = [  # (y, x, text, colour, bullet colour)
 ]
 
 
-@piece("claude-code", "Claude Code Session", "claude", seconds=12, fps=25,
+@piece("claude-code", "Claude Code Session", "claude", seconds=12, fps=60,
        blurb="A tiny Claude Code session: a prompt, the spinner pondering, an edit, and a glowing spark.")
 def claude_code(n):
     prompt = "MAKE MY WALL GLOW"
@@ -456,7 +456,7 @@ def claude_code(n):
         yield f
 
 
-@piece("spark-field", "Field of Sparks", "claude", seconds=10, fps=25,
+@piece("spark-field", "Field of Sparks", "claude", seconds=10, fps=60,
        blurb="A night sky of tiny Claude sparks twinkling and drifting past in layers.")
 def spark_field(n):
     r = rng("spark-field")
@@ -489,7 +489,7 @@ def spark_field(n):
         yield f
 
 
-@piece("hello-claude", "Hello, I'm Claude", "claude", seconds=10, fps=25,
+@piece("hello-claude", "Hello, I'm Claude", "claude", seconds=10, fps=60,
        blurb="The spark blooms, a greeting types itself out, then it all sparkles away.")
 def hello_claude(n):
     order = dissolve_order("hello-claude/dissolve")
@@ -532,7 +532,7 @@ PATH = [("tl", "tr"), ("tr", "rs"), ("rs", "ra"), ("ra", "rb"), ("rb", "rh"), ("
 STAR_NODES = ["tl", "tr", "ra", "rb", "br", "f1", "f2", "f3", "f4", "bl", "lb", "la"]
 
 
-@piece("clawd-constellation", "Clawd Constellation", "claude", seconds=10, fps=25,
+@piece("clawd-constellation", "Clawd Constellation", "claude", seconds=10, fps=60,
        blurb="Stars join up into Clawd, it lights up and blinks, then fades back into the sky.")
 def clawd_constellation(n):
     stars = starfield("clawd-constellation/stars", 70)
@@ -576,7 +576,7 @@ def clawd_constellation(n):
         yield f
 
 
-@piece("spark-bloom", "Spark Garden", "claude", seconds=10, fps=25,
+@piece("spark-bloom", "Spark Garden", "claude", seconds=10, fps=60,
        blurb="Claude sparks grow on stems and bloom like flowers, open, turn, and fold away.")
 def spark_bloom(n):
     r = rng("spark-bloom")

@@ -36,7 +36,7 @@ def draw_stars(f, st, p, mask=None):
 
 # ---------------------------------------------------------------------------------------------
 
-@piece("lava-lamp", "Lava Lamp", "ambient", seconds=10, fps=30,
+@piece("lava-lamp", "Lava Lamp", "ambient", seconds=10, fps=60,
        blurb="Molten blobs rising, merging and sinking in hot magenta and orange.")
 def lava_lamp(n):
     r = rng("lava-lamp")
@@ -63,7 +63,7 @@ def lava_lamp(n):
         yield f
 
 
-@piece("aurora", "Aurora", "ambient", seconds=10, fps=30,
+@piece("aurora", "Aurora", "ambient", seconds=10, fps=60,
        blurb="Northern lights rippling over snowy peaks, mirrored in a still lake.")
 def aurora(n):
     curt = octaves("aurora/curtain", (4, 6), 3)      # (t, x) lattices
@@ -98,7 +98,7 @@ def aurora(n):
         yield np.clip(f, 0, 255)
 
 
-@piece("ink", "Flowing Ink", "ambient", seconds=10, fps=30,
+@piece("ink", "Flowing Ink", "ambient", seconds=10, fps=60,
        blurb="Domain-warped noise like marbled ink: indigo, magenta, gold and teal.")
 def ink(n):
     a = octaves("ink/a", (4, 6, 4), 3)
@@ -117,15 +117,24 @@ def ink(n):
         yield ramp(pal, (v * 1.6 + 0.2 * q1) % 1.0)
 
 
-@piece("life", "Life", "ambient", seconds=10, fps=25,
+@piece("life", "Life", "ambient", seconds=10, fps=60,
        blurb="Conway's Game of Life from a random soup, with colour trails; fades out and re-seeds.")
 def life(n):
+    # Generations are discrete, so the pace is fixed at 250 per loop (25/s) whatever the frame
+    # rate: each is held for n/250 frames.
+    gens = _life(250)
+    for i in range(n):
+        yield gens[i * 250 // n]
+
+
+def _life(n):
     gw, gh = 64, 96
     g = rng("life/soup").random((gh, gw)) < 0.32
     age = np.zeros((gh, gw), np.float32)     # generations alive
     trail = np.zeros((gh, gw), np.float32)   # 1 at death, decays
     hue_at = np.zeros((gh, gw), np.float32)
     fade_from = int(n * 0.86)
+    out = []
     for i in range(n):
         alive_col = hsv(0.13 - np.clip(age / 40, 0, 0.6) * 0.5, 0.65 + 0.35 * np.clip(age / 10, 0, 1), 1.0)
         trail_col = hsv(hue_at, 1.0, 1.0) * (trail ** 1.3)[..., None] * 0.85
@@ -133,7 +142,7 @@ def life(n):
         # fade in from black and back out, so the loop restarts invisibly
         env = min(smoothstep(0, 1, i / 12), 1 - smoothstep(0, 1, (i - fade_from) / (n - 1 - fade_from)))
         img = img * env
-        yield np.repeat(np.repeat(img, 2, 0), 2, 1)
+        out.append(np.repeat(np.repeat(img, 2, 0), 2, 1))
         nb = sum(np.roll(np.roll(g, dy, 0), dx, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx)
         new = (nb == 3) | (g & (nb == 2))
         died = g & ~new
@@ -141,9 +150,10 @@ def life(n):
         hue_at = np.where(died, 0.62 + 0.3 * np.clip(age / 30, 0, 1), hue_at)
         age = np.where(new, np.where(g, age + 1, 0), 0)
         g = new
+    return out
 
 
-@piece("breathing", "Breathing Light", "ambient", seconds=10, fps=30,
+@piece("breathing", "Breathing Light", "ambient", seconds=10, fps=60,
        blurb="Three soft colour clouds drifting and breathing slowly; calm and dark at the edges.")
 def breathing(n):
     orbs = [((0.95, "#ff1e78"), 40, 58, 18, 22, 0.0), ((0.55, "#1e78ff"), 86, 110, 22, 26, 0.33),
@@ -159,7 +169,7 @@ def breathing(n):
         yield np.clip(f, 0, 255)
 
 
-@piece("starfield", "Warp Starfield", "ambient", seconds=5, fps=30,
+@piece("starfield", "Warp Starfield", "ambient", seconds=5, fps=60,
        blurb="Hyperspace: stars streak outward from the centre.")
 def starfield(n):
     r = rng("warp")
@@ -186,7 +196,7 @@ def starfield(n):
         yield np.clip(f, 0, 255)
 
 
-@piece("orbits", "Orrery", "ambient", seconds=10, fps=30,
+@piece("orbits", "Orrery", "ambient", seconds=10, fps=60,
        blurb="Planets on tilted orbits around a glowing sun; a moon and a ringed giant.")
 def orbits(n):
     cx, cy = 64, 96
@@ -247,7 +257,7 @@ def orbits(n):
         yield np.clip(f, 0, 255)
 
 
-@piece("bounce", "Bounce", "ambient", seconds=10, fps=30,
+@piece("bounce", "Bounce", "ambient", seconds=10, fps=60,
        blurb="A faceted gem bouncing off the edges, new colour every hit; it does hit the corner.")
 def bounce(n):
     size = 17
@@ -297,7 +307,7 @@ def bounce(n):
         yield np.clip(f, 0, 255)
 
 
-@piece("kaleidoscope", "Kaleidoscope", "ambient", seconds=8, fps=30,
+@piece("kaleidoscope", "Kaleidoscope", "ambient", seconds=8, fps=60,
        blurb="Eightfold mirrored noise, slowly turning and blooming outward.")
 def kaleidoscope(n):
     tex = octaves("kaleido", (4, 8, 8), 3)

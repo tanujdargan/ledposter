@@ -45,8 +45,9 @@ class Piece:
 PIECES: list[Piece] = []
 
 
-def piece(slug, title, category, seconds=0, fps=25, blurb=""):
-    """Register a generator. fps 25 (or 20/50) lets a <=256-colour piece be a lossless GIF."""
+def piece(slug, title, category, seconds=0, fps=60, blurb=""):
+    """Register a generator. 60fps: fewer frames flickered visibly more on the wall (2026-10-17). It
+    is not a GIF rate (whole centiseconds), so pieces are lossless RGB H.264."""
     def deco(fn):
         PIECES.append(Piece(slug, title, category, seconds, fps, fn, blurb))
         return fn

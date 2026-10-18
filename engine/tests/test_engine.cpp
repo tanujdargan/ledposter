@@ -54,8 +54,9 @@ static void test_media() {
   Playlist p({1000, 2000, 500}, true, false);
   assert(p.seek(0) == 0 && p.current() == 0);
   assert(p.seek(999) == 999 && p.current() == 0);
-  assert(p.seek(1000) == 0 && p.current() == 1);
+  assert(p.seek(1000) == 0 && p.current() == 1 && p.upcoming() == 2);
   assert(p.seek(3200) == 200 && p.current() == 2);
+  assert(p.upcoming() == 0);  // wraps: what to prefetch while the last item plays
   assert(p.seek(3500) == 0 && p.current() == 0);    // looped
   assert(p.seek(10100) == 100 && p.current() == 2);  // 2 passes + 3000ms: skips ahead
   Playlist once({1000, 2000}, false, false);

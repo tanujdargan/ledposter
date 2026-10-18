@@ -8,7 +8,6 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cerrno>
 #include <cstring>
 #include <memory>
@@ -63,24 +62,22 @@ inline Clip open_clip(const std::string &dir, int w, int h, const std::vector<in
   void *p = mmap(nullptr, want, PROT_READ, MAP_SHARED, fd, 0);
   close(fd);
   if (p == MAP_FAILED) throw fail("mmap frames.rgb: " + std::string(strerror(errno)));
-#ifdef MADV_WILLNEED
-  // Read ahead now, or the first pass faults each frame in from the SD card on the
-  // frame loop. Not MADV_SEQUENTIAL: Linux may drop pages behind it, and clips loop.
-  madvise(p, want, MADV_WILLNEED);  // advice only: a failure changes nothing
-#endif
   c.data.reset(static_cast<const uint8_t *>(p),
                [want](const uint8_t *q) { munmap(const_cast<uint8_t *>(q), want); });
-  // WILLNEED alone still left the first pass at 36-58fps instead of 60 (faults on the frame
-  // loop): touch every page from a side thread, which reads the card ~4x faster than 60fps plays.
-  // ponytail: one budget for the engine's life, so a library bigger than RAM is not read in
-  // whole and does not push the playing clip out; per-mode budgets if long playlists stutter.
-  static std::atomic<int64_t> budget{256 << 20};
-  if (budget.fetch_sub(int64_t(want)) >= int64_t(want))
-    std::thread([d = c.data, want] {
-      volatile uint8_t sink = 0;
-      for (size_t i = 0; i < want; i += 4096) sink = sink + d.get()[i];
-    }).detach();
   return c;
+}
+
+// Reads a clip into the page cache from a side thread, so its first pass does not fault frames
+// in from the SD card on the frame loop (that ran 36-58fps instead of 60; MADV_WILLNEED alone did
+// too). The card reads ~4x faster than 60fps plays. Done per playlist item just before its turn,
+// not at load: a 60fps library is bigger than RAM, and reading it all would push the playing
+// clip out.
+inline void prefetch(const Clip &c) {
+  const size_t n = c.ends_ms.size() * c.frame_bytes();
+  std::thread([d = c.data, n] {
+    volatile uint8_t sink = 0;
+    for (size_t i = 0; i < n; i += 4096) sink = sink + d.get()[i];
+  }).detach();
 }
 
 // Default playlist item duration: one full play; stills show for 10s.
@@ -106,6 +103,8 @@ struct Playlist {
     if (shuffle) std::shuffle(order.begin(), order.end(), rng);
   }
   int current() const { return order[pos]; }
+  // The item after this one (a guess at a reshuffle: the new pass's order is not drawn yet).
+  int upcoming() const { return pos + 1 < order.size() ? order[pos + 1] : order[0]; }
   int64_t end() const { return start + item_ms[current()]; }
 
   // Jumps to the next item at t (the button); false on the last item of the pass.
@@ -138,9 +137,16 @@ struct Playlist {
 // Media player mode: clips[i] is playlist item i.
 inline Mode media_mode(const std::string &name, std::vector<Clip> clips, Playlist pl) {
   auto p = std::make_shared<Playlist>(std::move(pl));
-  Mode m{name, false, [clips = std::move(clips), p](Frame &f, int64_t t) {
+  // The item playing and the one prefetched as next, so each item is read in once, ahead.
+  auto seen = std::make_shared<std::pair<int, int>>(-1, -1);
+  Mode m{name, false, [clips = std::move(clips), p, seen](Frame &f, int64_t t) {
            Playlist &pl = *p;
            const int64_t into = pl.seek(t);
+           if (seen->first != pl.current()) {
+             if (seen->second != pl.current()) prefetch(clips[pl.current()]);  // first, or a reshuffle
+             if (pl.upcoming() != pl.current()) prefetch(clips[pl.upcoming()]);
+             *seen = {pl.current(), pl.upcoming()};
+           }
            const Clip &c = clips[pl.current()];
            const int64_t local = into % c.total_ms();
            const size_t i = c.frame_at(local);
