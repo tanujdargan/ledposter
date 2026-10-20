@@ -8,6 +8,7 @@ art/scenes.py         pixel scenes (flat palettes)
 art/ambient.py        generative pieces (lossless RGB H.264)
 art/fun.py            fun pixel pieces: pong, block drop, cat nap, pizza, rocket...
 art/claude.py         Claude spark and Clawd pieces
+art/ascii_magic.py    ~110 picks from ascii-magic.com (MIT), rasterised by art/ascii_magic.mjs (needs node)
 art/lib.py            shared helpers: canvas, drawing, loopable noise, 3x5 font, encoder, wall checks
 art/paintings.json    the paintings: URL, title, artist, year, licence, source page, crop
 art/personal.py       optional: your own images/GIFs/clips -> native 128x192 loops
@@ -36,9 +37,16 @@ Create the token in the web app under Settings > API tokens. `artpack.py` upload
 | Ambient | the generative pieces, shuffled | 30 s |
 | Fun | the fun pieces (art/fun.py), shuffled | 18 s |
 | Claude | the Claude pieces (art/claude.py) | 18 s |
+| ASCII Magic | the ascii-magic.com picks, shuffled | 24 s |
 | Everything | all of the above, shuffled | as above |
 
 You can run it again safely. It reuses existing items and rewrites the playlists with the same content. It re-uploads an item only if its previous transcode failed. To refresh a piece after changing its code, delete it in the web app's library and run `artpack.py` again.
+
+## ASCII Magic pieces
+
+`art/ascii_magic.py` clones [ascii-magic-art](https://github.com/kailashsr38/ascii-magic-art) (MIT licence, (c) 2026 ASCII Magic) at a pinned commit into `art/.cache/`. Each piece is a JS function from time to coloured text. At 128 px wide a character is 1-2 px, so `ascii_magic.mjs` draws each cell as its colour scaled by the glyph's ink coverage: the pieces show as pixel art, not as readable text. That is also why the UI, chart and lettering pieces are not picked.
+
+Most pieces are landscape. In `reflow` mode (the default) the piece gets a portrait grid and lays itself out again to fill the wall. Pieces built from fixed sprites look stretched or empty that way, so they are in `FIT` and show centred, with black above and below. The pieces do not loop, so the last second of each 12 s clip crossfades into the first. To add one, browse the site, add its slug to `PICKS` and check it with `art/preview.py`.
 
 ## Designing for the wall
 

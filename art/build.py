@@ -37,7 +37,7 @@ def load_manifest(out):
 
 def save_manifest(out, items):
     from lib import write_json
-    order = {"painting": 0, "scene": 1, "ambient": 2, "fun": 3, "claude": 4, "personal": 5}
+    order = {"painting": 0, "scene": 1, "ambient": 2, "fun": 3, "claude": 4, "ascii": 5, "personal": 6}
     write_json(os.path.join(out, "manifest.json"), {
         "version": 1, "canvas": [128, 192],
         "items": sorted(items.values(), key=lambda i: (order.get(i["category"], 9), i["file"]))})
@@ -49,6 +49,7 @@ def build_pieces(out, only):
     import scenes  # noqa: F401
     import fun  # noqa: F401
     import claude  # noqa: F401
+    import ascii_magic  # noqa: F401  (last: it renames clashes with the pieces above)
     from lib import PIECES, encode, to_u8, wall_stats
 
     items = load_manifest(out)

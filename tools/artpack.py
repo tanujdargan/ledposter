@@ -12,6 +12,7 @@ replaces the playlists:
   Gallery        paintings, 20 s each
   Pixel Scenes   pixel scenes, 18 s each
   Ambient        generative pieces, 30 s each, shuffled
+  ASCII Magic    pieces from ascii-magic.com (art/ascii_magic.py), 24 s each, shuffled
   Everything     all of the above, shuffled
   (personal)     items from art/personal/sources.json go only into the playlist it names
 
@@ -35,9 +36,10 @@ PLAYLISTS = [  # name, categories, seconds per item, shuffle
     ("Ambient", ("ambient",), 30, True),
     ("Fun", ("fun",), 18, True),
     ("Claude", ("claude",), 18, False),
-    ("Everything", ("painting", "scene", "ambient", "fun", "claude"), None, True),
+    ("ASCII Magic", ("ascii",), 24, True),
+    ("Everything", ("painting", "scene", "ambient", "fun", "claude", "ascii"), None, True),
 ]
-SECONDS = {"painting": 20, "scene": 18, "ambient": 30, "fun": 18, "claude": 18, "personal": 15}
+SECONDS = {"painting": 20, "scene": 18, "ambient": 30, "fun": 18, "claude": 18, "ascii": 24, "personal": 15}
 
 
 class ApiError(Exception):
