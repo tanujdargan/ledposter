@@ -143,6 +143,12 @@ def build(name, w, h):
                 c = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255), (255, 0, 255)][pi % 6]
                 if x % 64 in (0, 63) or y % 64 in (0, 63): c = (255, 255, 255)
                 if x % 64 < 8 and y % 64 < 8: c = (0, 0, 0)   # black corner marks each panel's top-left
+            elif name == "edges":    # each panel's native edges on dim grey: row 0 red, row 63 green,
+                c = (40, 40, 40)     # col 0 blue, col 63 yellow; a dead/shifted/ghosting line stands out
+                if x % 64 == 0: c = (0, 0, 255)
+                if x % 64 == 63: c = (255, 255, 0)
+                if y % 64 == 0: c = (255, 0, 0)
+                if y % 64 == 63: c = (0, 255, 0)
             else:                    # bars: R G B W vertical bars
                 c = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)][x * 4 // w]
             row += bytes(int(v * DIM) for v in c[::-1])  # the card takes BGR
@@ -211,4 +217,5 @@ def main():
     send_frame(ifn, rows, w, h, seconds=secs)
 
 
-main()
+if __name__ == "__main__":
+    main()
