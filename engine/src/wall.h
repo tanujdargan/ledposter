@@ -61,6 +61,14 @@ inline size_t push_changed(const Frame &f, int pct, Shadow &sh, Set set) {
   return n;
 }
 
+// The panel-native pixel that shows at local (lx, ly) of a panel turned `rotate` degrees clockwise.
+inline Point native(int rotate, int s, int lx, int ly) {
+  if (rotate == 90) return {int16_t(ly), int16_t(s - 1 - lx)};
+  if (rotate == 180) return {int16_t(s - 1 - lx), int16_t(s - 1 - ly)};
+  if (rotate == 270) return {int16_t(s - 1 - ly), int16_t(lx)};
+  return {int16_t(lx), int16_t(ly)};
+}
+
 // Maps the logical canvas (panels on a col/row grid) to the coordinates
 // rpi-rgb-led-matrix exposes for a chain: one strip chain_length*size wide,
 // with chain index 0 (the panel plugged into the Pi) at the RIGHT end
@@ -87,10 +95,8 @@ struct Layout {
       const Panel &p = panels[i];
       for (int ly = 0; ly < s; ly++)
         for (int lx = 0; lx < s; lx++) {
-          int nx = lx, ny = ly;  // panel-native coords that appear at local (lx, ly)
-          if (p.rotate == 90) nx = ly, ny = s - 1 - lx;
-          if (p.rotate == 180) nx = s - 1 - lx, ny = s - 1 - ly;
-          if (p.rotate == 270) nx = s - 1 - ly, ny = lx;
+          const Point nat = native(p.rotate, s, lx, ly);
+          const int nx = nat.x, ny = nat.y;
           Point &dst = lut[size_t(p.row * s + ly) * width + p.col * s + lx];
           if (dst.x >= 0)
             throw std::runtime_error("two panels share col " + std::to_string(p.col) +
@@ -100,6 +106,26 @@ struct Layout {
     }
   }
 };
+
+// For a receiving card (colorlight.h): panels[i] is the card's slot i, the 64x64 block at
+// ((i % cols) * size, (i / cols) * size) of the frame the card is sent (its configured cabinet,
+// e.g. 128x192 with cols 2), and col/row/rotate say where that panel physically sits and how it
+// is turned. Returns logical y*width+x -> card pixel ({-1,-1}: no panel).
+inline std::vector<Point> card_lut(const Layout &L, int cols) {
+  if (cols < 1) throw std::runtime_error("matrix.card_columns must be >= 1");
+  const int s = L.size;
+  std::vector<Point> lut(size_t(L.width) * L.height, Point{-1, -1});
+  for (size_t i = 0; i < L.panels.size(); i++) {
+    const Panel &p = L.panels[i];
+    for (int ly = 0; ly < s; ly++)
+      for (int lx = 0; lx < s; lx++) {
+        const Point n = native(p.rotate, s, lx, ly);
+        lut[size_t(p.row * s + ly) * L.width + p.col * s + lx] = {
+            int16_t(int(i) % cols * s + n.x), int16_t(int(i) / cols * s + n.y)};
+      }
+  }
+  return lut;
+}
 
 // Estimated panel current in amps, linear in the RGB sum. The engine turns off
 // the library's luminance correction and applies gamma itself (media at

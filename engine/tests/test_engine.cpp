@@ -490,6 +490,25 @@ int main(int argc, char **argv) {
   Layout T(64, {{0, 0, 270}});
   assert(eq(at(T, 0, 0), 63, 0) && eq(at(T, 0, 63), 0, 0));
 
+  // Colorlight card: panels[i] is card slot i (2 per row of the card's 128x192 frame). This is the
+  // wall as photographed with numbers on 2026-10-24: slot 4 top-left turned 90, slot 5 top-right
+  // upside down, slots 3/2 in the middle, slots 0/1 upright at the bottom.
+  Layout C(64, {{0, 2, 0}, {1, 2, 0}, {1, 1, 180}, {0, 1, 90}, {0, 0, 90}, {1, 0, 180}});
+  const auto card = card_lut(C, 2);
+  auto cat = [&](int x, int y) { return card[size_t(y) * C.width + x]; };
+  assert(eq(cat(0, 128), 0, 0) && eq(cat(127, 191), 127, 63));  // bottom row: slots 0 and 1 as is
+  assert(eq(cat(0, 0), 0, 191));       // top-left: slot 4 (card rows 128-191), turned 90 clockwise
+  assert(eq(cat(63, 0), 0, 128));
+  assert(eq(cat(64, 0), 127, 191));    // top-right: slot 5, upside down
+  assert(eq(cat(64, 64), 63, 127));    // middle-right: slot 2 (card cols 0-63, rows 64-127), upside down
+  std::set<std::pair<int, int>> cseen;  // every card pixel used once
+  for (Point p : card) {
+    assert(p.x >= 0 && p.x < 128 && p.y >= 0 && p.y < 192);
+    cseen.insert({p.x, p.y});
+  }
+  assert(cseen.size() == 128u * 192u);
+  assert(throws([&] { card_lut(C, 0); }));
+
   // Single-panel bring-up: identity.
   Layout S(64, {{0, 0}});
   assert(S.width == 64 && S.height == 64 && eq(at(S, 5, 9), 5, 9));

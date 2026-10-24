@@ -48,6 +48,12 @@ docs/      spec, this file, protocol.md, ui-references.md, DEVIATIONS.md
 - So pixel values reaching the panel are linear PWM duty, and the limiter's current estimate (linear in RGB sum × hardware brightness) is accurate, not just conservative.
 - Brightness: `effective = min(user, auto)`, then the limiter scales each frame so its estimate never exceeds `power.ceiling_amps`.
 
+## Colorlight receiving card
+
+The bonnet tops out around 140-200Hz refresh on six chained panels, which flickers on dim content. Since 2026-10-24 the wall is driven by a Colorlight 5A-75B card instead: its FPGA refreshes the panels (1920Hz+) and the Pi only sends frames over Ethernet (a USB gigabit adapter, `eth1`: the card needs a gigabit link and the Pi 3B's own port is 100Mbit). `ledengine --colorlight eth1` selects it, from a systemd drop-in (`/etc/systemd/system/ledposter-engine.service.d/colorlight.conf`), so removing the drop-in falls back to the bonnet. The flag is root-time like the socket paths: the raw socket is opened as root, then the engine drops to `--user` itself.
+
+`engine/src/colorlight.h` sends BGR rows, then "show frame" twice, on a fixed 60Hz grid from its own thread, whatever the frame loop does: the card blanks the whole screen now and then on an uneven or 30Hz stream. `matrix.panels[i]` is the card's slot i (`card_lut` in wall.h). The card's own settings live on the card, written once with LEDVision: firmware 13.39 *Normal* (the PWM build shows nothing on these ICN2037 panels), cabinet 128x192, rows 0-63/64-127/128-191 on ports J1/J2/J3 (J5-J7 repeat them, J4/J8 carry nothing). `tools/colorlight.py` talks to the card directly for bring-up.
+
 ## Engine ↔ web app IPC
 
 - **Control:** Unix stream socket `engine.socket` (default `/run/ledposter/engine.sock`; the root-run engine binds its `--socket` flag, see above), newline-delimited JSON. Request `{"id":1,"cmd":"status", ...}` gets the response `{"id":1,"ok":true, ...}` or `{"id":1,"ok":false,"error":"..."}`. Every command is listed in `docs/protocol.md`; whoever adds a command documents it there.

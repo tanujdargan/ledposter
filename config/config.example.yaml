@@ -11,6 +11,10 @@ matrix:
   limit_refresh_rate_hz: 130          # steady cap; by eye: uncapped (130-205Hz, uneven) and 11-bit/70Hz both flicker worse
   disable_busy_waiting: true          # sleep out the refresh cap, don't spin: spinning at RT 99 gets RT-throttled ~once a second
   show_refresh_rate: false            # true prints refresh Hz to the terminal
+  # With a Colorlight card (ledengine --colorlight IFACE, see docs/ARCHITECTURE.md) the bonnet
+  # keys above are unused and panels[i] is the card's slot i instead: the 64x64 block at
+  # ((i % card_columns) * 64, (i / card_columns) * 64) of the card's configured cabinet.
+  card_columns: 2
   # Chain order: the first entry is the panel plugged into the bonnet.
   # col/row place it on the portrait grid (0,0 = top-left).
   # rotate: how far that panel is physically turned clockwise (0/90/180/270).

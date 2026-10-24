@@ -42,18 +42,43 @@
 #ifndef LEDPOSTER_SIM
 #include <led-matrix.h>
 
-// The only code that touches the panels.
+#include <memory>
+
+#include "colorlight.h"
+
+// Drops root for the Colorlight path, where no matrix library does it. user/group were checked
+// by check_drop_target before anything was opened.
+static void drop_root(const std::string &user, const std::string &group) {
+  if (geteuid() != 0) return;
+  const passwd *pw = getpwnam(user.c_str());
+  const struct group *gr = getgrnam(group.c_str());
+  if (!pw || !gr || initgroups(user.c_str(), gr->gr_gid) || setgid(gr->gr_gid) || setuid(pw->pw_uid) ||
+      geteuid() == 0 || setuid(0) == 0) {
+    fprintf(stderr, "ledengine: could not drop root to %s:%s\n", user.c_str(), group.c_str());
+    exit(1);
+  }
+}
+
+// The only code that touches the panels: the bonnet through the matrix library, or a
+// Colorlight receiving card (--colorlight IFACE).
 struct Display {
-  rgb_matrix::RGBMatrix *matrix;
-  rgb_matrix::FrameCanvas *off;
+  rgb_matrix::RGBMatrix *matrix = nullptr;
+  rgb_matrix::FrameCanvas *off = nullptr;
   const Layout &L;
   rgb_matrix::FrameCanvas *canvas[2] = {nullptr, nullptr};  // the two that alternate
   Shadow shadow[2];
+  std::unique_ptr<Colorlight> card;
 
   // user, group: what the library drops root to once the GPIO is set up.
   Display(const YAML::Node &m, const Layout &L, const std::string &, const std::string &user,
-          const std::string &group)
+          const std::string &group, const std::string &colorlight)
       : L(L) {
+    if (!colorlight.empty()) {
+      card = std::make_unique<Colorlight>(colorlight, L, m["card_columns"].as<int>(2));
+      drop_root(user, group);
+      card->start();
+      return;
+    }
     const std::string mapping = m["hardware_mapping"].as<std::string>("adafruit-hat-pwm");
     rgb_matrix::RGBMatrix::Options o;
     o.hardware_mapping = mapping.c_str();
@@ -97,6 +122,7 @@ struct Display {
   // pct: output brightness after the limiter. The library scales each value
   // by it as the pixel is set, so it only affects this frame.
   void show(const Frame &f, int pct) {
+    if (card) return card->show(f, pct);
     int k = off == canvas[0] ? 0 : off == canvas[1] ? 1 : !canvas[0] ? 0 : 1;
     canvas[k] = off;
     if (pct <= 0) {
@@ -121,7 +147,7 @@ struct Display {
   std::chrono::steady_clock::time_point last{};
 
   Display(const YAML::Node &, const Layout &L, const std::string &dump, const std::string &,
-          const std::string &)
+          const std::string &, const std::string &)
       : out(L.width, L.height), dump(dump) {}
   ~Display() { write(); }
 
@@ -149,6 +175,7 @@ static int usage() {
   fprintf(stderr,
           "usage: ledengine [--config $LEDPOSTER_DATA/config.yaml]\n"
           "                 [--socket PATH] [--preview-socket PATH] [--user NAME] [--group NAME]\n"
+          "                 [--colorlight IFACE]\n"
           "                 [--pattern P [--color RRGGBB] | --play MEDIA_ID | --playlist NAME |\n"
           "                  --effect E | --mode clock|idle | --text TEXT]\n"
           "  P: panel-id, solid, cycle, rows, cols\n"
@@ -156,6 +183,9 @@ static int usage() {
           "  media is read from $LEDPOSTER_DATA/media (LEDPOSTER_DATA defaults to /data)\n"
           "  the mode flags set the starting mode (default: the boot screen until the web app\n"
           "  sets one); the control socket can change it\n"
+          "  --colorlight IFACE: drive a Colorlight receiving card on that Ethernet interface\n"
+          "  instead of the bonnet (matrix.panels[i] is the card's slot i, matrix.card_columns\n"
+          "  slots per row of the card's frame)\n"
           "  --socket, --preview-socket, --user, --group: where the sockets go and whom the\n"
           "  engine drops root to (defaults /run/ledposter/{engine,frames}.sock, daemon:daemon).\n"
           "  As root the config's engine.socket/preview_socket/user/group are ignored (the\n"
@@ -459,7 +489,7 @@ int main(int argc, char **argv) {
   const char *env = getenv("LEDPOSTER_DATA");
   const std::string data = env && *env ? env : "/data", media_dir = data + "/media";
   std::string config_path = data + "/config.yaml", pattern, play, playlist, dump;
-  std::string effect, kind, text;
+  std::string effect, kind, text, colorlight;
   uint32_t color = 0xffffff;
   PrivSettings flags{"", "", "", ""};  // only what was given; privs.h has the defaults
   if ((argc - 1) % 2) return usage();
@@ -470,6 +500,7 @@ int main(int argc, char **argv) {
     else if (k == "--preview-socket") flags.preview_socket = v;
     else if (k == "--user") flags.user = v;
     else if (k == "--group") flags.group = v;
+    else if (k == "--colorlight") colorlight = v;
     else if (k == "--pattern") pattern = v;
     else if (k == "--color") color = std::stoul(v, nullptr, 16);
     else if (k == "--play") play = v;
@@ -570,7 +601,14 @@ int main(int argc, char **argv) {
 
   LightSensor sensor(bh["enabled"].as<bool>(false), bh["i2c_bus"].as<int>(1), bh["address"].as<int>(0x23),
                      bh["poll_ms"].as<int>(500), st.s.smoothing_s);
-  Display display(m, layout, dump, user, group);
+  std::unique_ptr<Display> dp;
+  try {
+    dp = std::make_unique<Display>(m, layout, dump, user, group, colorlight);
+  } catch (const std::exception &e) {
+    fprintf(stderr, "ledengine: %s\n", e.what());
+    return 1;
+  }
+  Display &display = *dp;
   fprintf(stderr, "canvas %dx%d, %zu panels, mode %s\n", layout.width, layout.height,
           layout.panels.size(), st.info.name.c_str());
   const auto t0 = std::chrono::steady_clock::now();

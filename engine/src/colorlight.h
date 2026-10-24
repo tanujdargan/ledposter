@@ -1,0 +1,124 @@
+// Output to a Colorlight 5A-75B receiving card over raw Ethernet: the card refreshes the panels
+// itself (FPGA, 1920Hz+), the Pi only sends frames. Protocol as in FPP's ColorLight-5a-75.cpp,
+// checked on a 5A-75B V8.2 with firmware 13.39 (Normal) on 2026-10-24:
+//  - every packet: dst 11:22:33:44:55:66, src 22:22:33:44:55:66, the packet type in byte 12
+//  - per frame: brightness (0x0A), one row packet (0x55) per row, then "show frame" (0x01) twice
+//    (firmware v13+ wants it twice; v9 wanted it once)
+//  - pixels in BGR order (red went out blue in RGB order)
+//  - the card blanks the whole screen now and then when frames come unevenly or at 30Hz, and holds
+//    the last frame steady when they stop; a fixed 60Hz stream held solid (120 too, 250 shimmered).
+//    So a thread sends the newest frame on a fixed grid, whatever the frame loop is doing.
+// The card's own settings (module, scan, cabinet 128x192, which of its ports carry which rows)
+// are set once with LEDVision and saved on the card; this only sends pixels.
+#pragma once
+#include <linux/if_packet.h>
+#include <net/if.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "wall.h"
+
+struct Colorlight {
+  static constexpr int kHz = 60;
+  int fd = -1, w, h;
+  std::vector<Point> lut;  // logical -> card pixel
+  std::mutex mu;
+  std::vector<uint8_t> next, cur;  // card frames, BGR; next is handed over under mu
+  bool fresh = false;
+  std::atomic<bool> stop{false};
+  std::thread th;
+
+  // As root: the raw socket needs CAP_NET_RAW, the caller drops root after this.
+  Colorlight(const std::string &ifname, const Layout &L, int cols) : lut(card_lut(L, cols)) {
+    w = 0, h = 0;
+    for (Point p : lut) w = std::max(w, p.x + 1), h = std::max(h, p.y + 1);
+    if (w > 497) throw std::runtime_error("colorlight: rows over 497 pixels need split packets");
+    const unsigned idx = if_nametoindex(ifname.c_str());
+    if (!idx) throw std::runtime_error("--colorlight " + ifname + ": no such interface");
+    fd = socket(AF_PACKET, SOCK_RAW, 0);
+    if (fd < 0) throw std::runtime_error(std::string("colorlight socket: ") + strerror(errno));
+    sockaddr_ll a{};
+    a.sll_family = AF_PACKET;
+    a.sll_ifindex = int(idx);
+    if (bind(fd, reinterpret_cast<sockaddr *>(&a), sizeof a))
+      throw std::runtime_error("colorlight bind " + ifname + ": " + strerror(errno));
+    const int buf = 4 << 20;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof buf);
+    next.assign(size_t(w) * h * 3, 0), cur = next;
+    fprintf(stderr, "colorlight: %s, card frame %dx%d at %dHz\n", ifname.c_str(), w, h, kHz);
+  }
+  ~Colorlight() {
+    stop = true;
+    if (th.joinable()) th.join();
+    std::fill(cur.begin(), cur.end(), 0);  // leave the wall dark, like the matrix library does
+    for (int i = 0; i < 3; i++) send_frame(), std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (fd >= 0) close(fd);
+  }
+
+  void start() {
+    th = std::thread([this] {
+      using clock = std::chrono::steady_clock;
+      const auto t0 = clock::now();
+      for (int64_t k = 1; !stop; k++) {
+        {
+          std::lock_guard<std::mutex> l(mu);
+          if (fresh) std::swap(cur, next), fresh = false;
+        }
+        send_frame();
+        std::this_thread::sleep_until(t0 + std::chrono::microseconds(k * 1000000 / kHz));
+      }
+    });
+  }
+
+  // pct: output brightness after the limiter, scaled into the pixels like the matrix path does.
+  void show(const Frame &f, int pct) {
+    std::lock_guard<std::mutex> l(mu);
+    for (size_t i = 0; i < lut.size(); i++) {
+      const Point p = lut[i];
+      if (p.x < 0) continue;
+      const uint8_t *c = &f.rgb[i * 3];
+      uint8_t *d = &next[(size_t(p.y) * w + p.x) * 3];
+      d[0] = c[2] * pct / 100, d[1] = c[1] * pct / 100, d[2] = c[0] * pct / 100;
+    }
+    fresh = true;
+  }
+
+ private:
+  std::vector<uint8_t> pkt;
+  int send_errors = 0;
+
+  void put(uint8_t type, const uint8_t *data, size_t n, size_t size) {
+    static const uint8_t mac[12] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x22, 0x22, 0x33, 0x44, 0x55, 0x66};
+    pkt.assign(size, 0);
+    memcpy(pkt.data(), mac, 12);
+    pkt[12] = type;
+    if (n) memcpy(&pkt[13], data, n);
+    if (::send(fd, pkt.data(), pkt.size(), 0) < 0 && ++send_errors % 600 == 1)  // ~once per 10s
+      fprintf(stderr, "colorlight send: %s (%d so far)\n", strerror(errno), send_errors);
+  }
+  void send_frame() {
+    const uint8_t bright[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    put(0x0A, bright, 4, 77);
+    std::vector<uint8_t> row(8 + size_t(w) * 3);
+    for (int y = 0; y < h; y++) {
+      const uint8_t hdr[8] = {uint8_t(y >> 8), uint8_t(y), 0, 0, uint8_t(w >> 8), uint8_t(w), 0x08, 0x88};
+      memcpy(row.data(), hdr, 8);
+      memcpy(&row[8], &cur[size_t(y) * w * 3], size_t(w) * 3);
+      put(0x55, row.data(), row.size(), 13 + row.size());
+    }
+    uint8_t sync[99] = {};
+    sync[0] = 0x07, sync[22] = 0xFF, sync[23] = 0x05, sync[25] = sync[26] = sync[27] = 0xFF;
+    put(0x01, sync, sizeof sync, 112);
+    put(0x01, sync, sizeof sync, 112);
+  }
+};
