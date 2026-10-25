@@ -145,11 +145,11 @@ inline double limiter_scale(double amps, double ceiling_amps) {
   return amps > ceiling_amps ? ceiling_amps / amps : 1.0;
 }
 
-// The brightness chain (docs/ARCHITECTURE.md): effective = min(user, auto),
-// then the limiter. auto_pct is NaN when auto is off or the sensor has no
-// reading; the user setting then applies on its own.
+// The brightness chain (docs/ARCHITECTURE.md): effective = auto when auto is on and the sensor
+// reads, else user; then the limiter. Was min(user, auto), but the app greys the slider out while
+// auto is on, so a slider left at 5% pinned the wall at 5% whatever the room (2026-10-25).
 inline int effective_pct(int user, double auto_pct) {
-  return std::isnan(auto_pct) ? user : std::min(user, int(std::lround(auto_pct)));
+  return std::isnan(auto_pct) ? user : int(std::lround(auto_pct));
 }
 
 // How one frame goes out. The output brightness is a whole percent because

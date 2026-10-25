@@ -112,15 +112,16 @@ struct Colorlight {
     });
   }
 
-  // pct: output brightness after the limiter, scaled into the pixels like the matrix path does.
-  void show(const Frame &f, int pct) {
+  // pm: output brightness after the limiter in tenths of a percent (smooth fades at low levels),
+  // scaled into the pixels.
+  void show(const Frame &f, int pm) {
     std::lock_guard<std::mutex> l(mu);
     for (size_t i = 0; i < lut.size(); i++) {
       const Point p = lut[i];
       if (p.x < 0) continue;
       const uint8_t *c = &f.rgb[i * 3];
       uint8_t *d = &next[(size_t(p.y) * w + p.x) * 3];
-      d[0] = c[2] * pct / 100, d[1] = c[1] * pct / 100, d[2] = c[0] * pct / 100;
+      d[0] = c[2] * pm / 1000, d[1] = c[1] * pm / 1000, d[2] = c[0] * pm / 1000;
     }
     if (next != cur) fresh = true;  // a still redrawn is not a new frame (cur only changes under mu)
   }

@@ -196,7 +196,7 @@ def test_user_brightness_lowers_amps(engine):
 
     e.ctl.ok("set_mode", mode="pattern", pattern="solid", color="ffffff")
     e.ctl.ok("set_brightness", value=20)  # 20% of 36A: under the ceiling
-    st = e.ctl.wait(lambda s: s["amps_unlimited"] > 7)
+    st = e.ctl.wait(lambda s: s["amps_unlimited"] > 7 and s["brightness"]["output"] == 20)  # after the fade
     assert not st["limited"] and st["amps"] == pytest.approx(7.2, abs=0.01)
 
 
@@ -204,19 +204,20 @@ def test_fake_lux_drives_auto_brightness(engine):
     e = engine("--pattern", "solid", "--color", "ffffff", user=80)
     e.ctl.ok("set_fake_lux", lux=1)  # darker than lux_low
     # status answers before the loop's next pass recomputes auto, so wait for that pass
-    st = e.ctl.wait(lambda s: s["sensor"] == "fake" and s["brightness"]["auto"] is not None)
+    st = e.ctl.wait(lambda s: s["sensor"] == "fake" and s["brightness"]["auto"] is not None
+                    and s["brightness"]["output"] == s["brightness"]["effective"], timeout=12)  # after the 1s-tau fade
     assert st["lux"] == 1 and st["brightness"]["auto"] == 10
     assert st["brightness"]["effective"] == 10 and st["brightness"]["output"] == 10
     assert not st["limited"]
 
     e.ctl.ok("set_fake_lux", lux=28.3)  # geometric midpoint of 2..400 -> 55%
-    st = e.ctl.wait(lambda s: s["lux"] == 28.3)
+    st = e.ctl.wait(lambda s: s["lux"] == 28.3 and s["limited"], timeout=12)  # the fade reaches the limit
     assert st["brightness"]["auto"] == pytest.approx(55, abs=0.5)
     assert st["brightness"]["effective"] == 55 and st["limited"]  # 55% white > 13A
 
     e.ctl.ok("set_fake_lux", lux=100000)
     st = e.ctl.wait(lambda s: s["brightness"]["auto"] == 100)
-    assert st["brightness"]["effective"] == 80  # min(user, auto)
+    assert st["brightness"]["effective"] == 100  # auto, not capped by the user setting
 
     e.ctl.ok("set_fake_lux", lux=1)
     e.ctl.ok("set_auto_brightness", enabled=False)
@@ -540,8 +541,8 @@ def test_sim_button(engine):
     assert "button.cycle[3]: no playlist 'missing'" in e.logtext()
 
     press(600)  # long: display off, the mode keeps running
-    st = e.ctl.wait(lambda s: not s["power"])
-    assert st["mode"] == "effect" and st["amps"] == 0
+    st = e.ctl.wait(lambda s: not s["power"] and s["amps"] == 0)  # after the fade out
+    assert st["mode"] == "effect"
     press(600)
     e.ctl.wait(lambda s: s["power"])
 

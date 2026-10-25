@@ -54,7 +54,7 @@ Commands take effect from the next frame (within about 100ms). A `status` sent r
 
 **`set_brightness`** sets the user brightness (the slider). It lasts until the engine restarts or `reload_config` runs; the web app persists it by writing `brightness.user` to the config.
 
-**`set_auto_brightness`** turns BH1750 auto brightness on or off. Effective brightness is `min(user, auto)` when on and the sensor answers, otherwise `user`.
+**`set_auto_brightness`** turns BH1750 auto brightness on or off. Effective brightness is `auto` when on and the sensor answers, otherwise `user`.
 
 **`power`** `{"on": false}` outputs black. The engine keeps running: modes and playlists carry on, the sockets stay up, `status` reports `power: false` and 0A.
 
@@ -213,7 +213,7 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
 | `brightness.user` | the user setting, 0 to 100 |
 | `brightness.auto` | what the BH1750 curve asks for (smoothed), or `null` with no sensor reading. Reported even when auto is off |
 | `brightness.auto_enabled` | auto brightness switch |
-| `brightness.effective` | `min(user, auto)` if auto is on and the sensor answers, else `user` |
+| `brightness.effective` | `auto` if auto is on and the sensor answers, else `user` |
 | `brightness.output` | the percent actually sent to the panels after the limiter, 0 when power is off |
 | `lux` | latest sensor reading (unsmoothed), or `null` |
 | `sensor` | `ok`, `missing` (not found or read error; the engine retries every 5s), `fake` (simulator with `set_fake_lux`) |

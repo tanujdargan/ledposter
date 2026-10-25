@@ -46,7 +46,7 @@ docs/      spec, this file, protocol.md, ui-references.md, DEVIATIONS.md
 
 - The engine disables rpi-rgb-led-matrix's own luminance correction (`matrix->set_luminance_correct(false)`) and owns gamma itself. Cached media is pre-gamma'd. Generative, clock and text output is passed through the engine's gamma LUT (`display.gamma`, default 2.2) before output.
 - So pixel values reaching the panel are linear PWM duty, and the limiter's current estimate (linear in RGB sum × hardware brightness) is accurate, not just conservative.
-- Brightness: `effective = min(user, auto)`, then the limiter scales each frame so its estimate never exceeds `power.ceiling_amps`.
+- Brightness: `effective = auto` when auto is on and the sensor reads, else `user`, then the limiter scales each frame so its estimate never exceeds `power.ceiling_amps`.
 
 ## Colorlight receiving card
 

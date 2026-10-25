@@ -2,7 +2,7 @@
 // Plays cached media and playlists (media.h), the test patterns, generative
 // effects (effects.h), clock, idle and text (text.h, catalog.h), with overlays
 // (overlay.h) on top. Every frame goes through the brightness chain:
-// min(user, BH1750 auto), then the limiter. The control and preview sockets
+// BH1750 auto (else user), then the limiter. The control and preview sockets
 // (ipc.h, docs/protocol.md) let the web app drive it and watch the output; the
 // push button (button.h) cycles modes, toggles power and asks for Wi-Fi setup.
 // DDP/E1.31 input (stream.h) takes over the wall while frames arrive.
@@ -128,10 +128,11 @@ struct Display {
   ~Display() { delete matrix; }  // clears the panels
   const char *output() const { return card ? "colorlight" : "hub75"; }  // status "output"
 
-  // pct: output brightness after the limiter. The library scales each value
-  // by it as the pixel is set, so it only affects this frame.
-  void show(const Frame &f, int pct) {
-    if (card) return card->show(f, pct);
+  // pm: output brightness after the limiter, in tenths of a percent. The library scales each value
+  // by it (whole percent) as the pixel is set, so it only affects this frame.
+  void show(const Frame &f, int pm) {
+    if (card) return card->show(f, pm);
+    const int pct = (pm + 5) / 10;
     int k = off == canvas[0] ? 0 : off == canvas[1] ? 1 : !canvas[0] ? 0 : 1;
     canvas[k] = off;
     if (pct <= 0) {
@@ -163,8 +164,8 @@ struct Display {
   ~Display() { write(); }
   const char *output() const { return card ? "colorlight" : "sim"; }
 
-  void show(const Frame &f, int pct) {
-    scale_frame(f, pct, out);
+  void show(const Frame &f, int pm) {
+    scale_frame(f, (pm + 5) / 10, out);
     const auto now = std::chrono::steady_clock::now();
     if (now - last >= std::chrono::seconds(1)) write(), last = now;
   }
@@ -928,6 +929,8 @@ int main(int argc, char **argv) {
   int frames = 0, log_pct = -1, frame_errors = 0;
   int64_t last_frame_error = 0;
   bool shown = false, log_limited = false;
+  double glide = NAN;  // brightness on the way to `want`, percent
+  int64_t glide_t = 0;
   uint64_t drawn = 0, previewed = 0, joined = 0;  // frames drawn, the last one previewed, clients seen
   while (!g_stop) {
     using namespace std::chrono;
@@ -960,7 +963,21 @@ int main(int argc, char **argv) {
       st.auto_pct = auto_pct(st.s.curve, sensor.smoothed);
       st.effective = effective_pct(st.s.user, st.s.auto_on ? st.auto_pct : NAN);
       const int want = st.power ? st.effective : 0;
-      if (st.draw.needed(t, st.streaming, fresh, ov, want)) {
+      // Brightness glides to `want` in perceptual space (gamma 2.2): an exponential, tau 1s while
+      // the light sensor drives it (after its own log-lux smoothing that is an S-curve, soft at both
+      // ends), 0.15s for the slider and power. In tenths of a percent, so no 1% steps when dim.
+      if (std::isnan(glide)) {
+        glide = want;
+      } else {
+        const double tau = st.power && st.s.auto_on && !std::isnan(st.auto_pct) ? 1.0 : 0.15;
+        const double k = 1 - std::exp(-(t - glide_t) / 1000.0 / tau);
+        const double a = std::pow(glide / 100, 1 / 2.2), b = std::pow(want / 100.0, 1 / 2.2);
+        glide = 100 * std::pow(a + (b - a) * k, 2.2);
+        if (std::abs(glide - want) < 0.05) glide = want;
+      }
+      glide_t = t;
+      const int want_pm = int(std::lround(glide * 10));
+      if (st.draw.needed(t, st.streaming, fresh, ov, want_pm)) {
         int64_t due = st.draw.due;
         if (st.streaming) {
           frame.rgb = sframe.rgb;
@@ -981,9 +998,9 @@ int main(int argc, char **argv) {
         // Overlays go on top of the mode or stream, before brightness and the limiter.
         if (clock_on) st.clock.apply(frame, st.s.lut);
         if (ov) st.ov->apply(frame, t, st.s.lut);
-        st.out = limit_power(frame, layout.size, st.s.amps_full, want, st.s.ceiling);
-        display.show(frame, st.out.pct);
-        st.draw.drawn(due, ov, want);
+        st.out = limit_power(frame, layout.size, st.s.amps_full, (want_pm + 9) / 10, st.s.ceiling);
+        display.show(frame, std::min(want_pm, st.out.pct * 10));
+        st.draw.drawn(due, ov, want_pm);
         if (!shown) fprintf(stderr, "first frame\n"), shown = true;  // boot timing (docs/ACCEPTANCE.md)
         frames++, drawn++;
       }
@@ -991,6 +1008,7 @@ int main(int argc, char **argv) {
       // since a wake only redraws when needed() says so.
       if (!st.streaming) wake = std::min(wake, st.draw.due);
       if (ov) wake = std::min(wake, t + fx::kFrameMs);
+      if (glide != want) wake = std::min(wake, t + 16);  // ~60 steps a second while fading
       if (t - fps_t >= 1000) {
         st.fps = frames * 1000.0 / (t - fps_t), frames = 0;
         st.stream_fps = (st.stream_seen - st.stream_fps_base) * 1000.0 / (t - fps_t);

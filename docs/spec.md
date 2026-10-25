@@ -55,7 +55,7 @@ The engine owns the matrix, renders a 128 x 192 RGB canvas at a steady frame rat
 
 - Every frame, estimate panel current from the sum of RGB values (calibrated constant, about 30W per panel at full white)
 - If the estimate exceeds the configured ceiling (default 13A at 5V), scale that frame's brightness down to fit; never exceed the ceiling
-- User brightness, auto brightness from the BH1750, and the limiter combine as min(user, auto) then the limiter on top
+- User brightness, auto brightness from the BH1750, and the limiter combine as auto (when on and the sensor reads, else user) then the limiter on top
 
 **Modes**
 

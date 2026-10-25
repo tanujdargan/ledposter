@@ -106,9 +106,9 @@ static void test_brightness() {
   }
   assert(v > 95);
 
-  // effective = min(user, auto); no auto reading -> user.
+  // effective = auto when there is a reading, else user.
   assert(effective_pct(80, NAN) == 80 && effective_pct(80, 30.4) == 30);
-  assert(effective_pct(20, 90) == 20);
+  assert(effective_pct(5, 90) == 90);
 
   // Ceiling holds for full white on 6 panels at every user/auto combination,
   // measured on the frame as the panels show it.
