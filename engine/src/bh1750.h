@@ -184,6 +184,6 @@ struct LightSensor {
                   why.c_str());
         lux = NAN, smoothed = NAN, ok = false, logged = true;
       }
-    } while (pause(ok ? poll_ms : 60000));
+    } while (pause(ok ? poll_ms : 5000));  // missing: retry every 5s (a bumped wire comes back quickly)
   }
 };
