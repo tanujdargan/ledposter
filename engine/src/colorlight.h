@@ -143,7 +143,13 @@ struct Colorlight {
     const uint8_t bright[4] = {0xFF, 0xFF, 0xFF, 0xFF};
     put(0x0A, bright, 4, 77);
     std::vector<uint8_t> row(8 + size_t(w) * 3);
+    // Rows paced over 60% of the frame period, 8 at a time: sent in one burst (200KB for a 256x256
+    // cabinet) the card lost some, which then showed an older frame's rows for a frame (filmed at
+    // 240fps: the picture jumped back 2 frames every few). LEDVision paces its stream too.
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto span = std::chrono::microseconds(600000 / hz);
     for (int y = 0; y < h; y++) {
+      if (y && y % 8 == 0) std::this_thread::sleep_until(t0 + span * y / h);
       const uint8_t hdr[8] = {uint8_t(y >> 8), uint8_t(y), 0, 0, uint8_t(w >> 8), uint8_t(w), 0x08, 0x88};
       memcpy(row.data(), hdr, 8);
       memcpy(&row[8], &cur[size_t(y) * w * 3], size_t(w) * 3);
