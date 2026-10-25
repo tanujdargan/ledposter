@@ -13,6 +13,7 @@
 #pragma once
 #include <linux/if_packet.h>
 #include <net/if.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -52,6 +53,14 @@ struct Colorlight {
     a.sll_ifindex = int(idx);
     if (bind(fd, reinterpret_cast<sockaddr *>(&a), sizeof a))
       throw std::runtime_error("colorlight bind " + ifname + ": " + strerror(errno));
+    // Bring the link up ourselves: NetworkManager only does it ~40s into boot on a Pi 3B,
+    // and until then every send fails with "Network is down" and the wall stays dark.
+    ifreq r{};
+    strncpy(r.ifr_name, ifname.c_str(), IFNAMSIZ - 1);
+    if (ioctl(fd, SIOCGIFFLAGS, &r) == 0 && !(r.ifr_flags & IFF_UP)) {
+      r.ifr_flags |= IFF_UP;
+      if (ioctl(fd, SIOCSIFFLAGS, &r)) fprintf(stderr, "colorlight: %s up: %s\n", ifname.c_str(), strerror(errno));
+    }
     const int buf = 4 << 20;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof buf);
     next.assign(size_t(w) * h * 3, 0), cur = next;
