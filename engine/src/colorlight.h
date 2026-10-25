@@ -33,7 +33,7 @@
 #include "wall.h"
 
 struct Colorlight {
-  int hz, resend;  // send rate; stop resending an unchanged frame after this many sends (0: never)
+  int hz, resend, syncs;  // syncs: "show frame" packets per frame; send rate; stop resending an unchanged frame after this many sends (0: never)
   int fd = -1, w, h, panels_h;  // card frame; panels_h: rows the panels show, the rest is padding
   std::vector<Point> lut;  // logical -> card pixel
   std::mutex mu;
@@ -45,8 +45,10 @@ struct Colorlight {
   // As root: the raw socket needs CAP_NET_RAW, the caller drops root after this.
   // card_w/card_h: the cabinet size set in LEDVision. The whole of it is sent, black past the
   // panels: left unsent, its leftovers showed as one glitchy column on a 256x256 cabinet.
-  Colorlight(const std::string &ifname, int hz, int resend, const Layout &L, int cols, int card_w, int card_h)
-      : hz(hz), resend(resend), lut(card_lut(L, cols)) {
+  Colorlight(const std::string &ifname, int hz, int resend, int syncs, const Layout &L, int cols, int card_w,
+             int card_h)
+      : hz(hz), resend(resend), syncs(syncs), lut(card_lut(L, cols)) {
+    if (syncs < 1 || syncs > 2) throw std::runtime_error("--colorlight-syncs must be 1 or 2");
     if (hz < 1 || hz > 240) throw std::runtime_error("--colorlight-hz must be 1..240");
     if (resend < 0) throw std::runtime_error("--colorlight-resend must be >= 0");
     w = 0, h = 0;
@@ -162,7 +164,8 @@ struct Colorlight {
     }
     uint8_t sync[99] = {};
     sync[0] = 0x07, sync[22] = 0xFF, sync[23] = 0x05, sync[25] = sync[26] = sync[27] = 0xFF;
-    put(0x01, sync, sizeof sync, 112);
-    put(0x01, sync, sizeof sync, 112);
+    // FPP sends it twice for firmware v13+ ("possibly unnecessary"). Twice at 120Hz, the card now
+    // and then showed a stale buffer for ~4ms (filmed at 240fps), so --colorlight-syncs.
+    for (int i = 0; i < syncs; i++) put(0x01, sync, sizeof sync, 112);
   }
 };

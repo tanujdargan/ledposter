@@ -39,10 +39,10 @@
 #define LEDPOSTER_FONTS_DIR "/opt/ledposter/vendor/rpi-rgb-led-matrix/fonts"
 #endif
 
-// --colorlight IFACE [--colorlight-hz N] [--colorlight-resend N]
+// --colorlight IFACE [--colorlight-hz N] [--colorlight-resend N] [--colorlight-syncs 1|2]
 struct CardOpts {
   std::string ifname;
-  int hz = 60, resend = 0;
+  int hz = 60, resend = 0, syncs = 2;
 };
 
 #ifndef LEDPOSTER_SIM
@@ -80,7 +80,7 @@ struct Display {
           const std::string &group, const CardOpts &colorlight)
       : L(L) {
     if (!colorlight.ifname.empty()) {
-      card = std::make_unique<Colorlight>(colorlight.ifname, colorlight.hz, colorlight.resend, L, m["card_columns"].as<int>(2),
+      card = std::make_unique<Colorlight>(colorlight.ifname, colorlight.hz, colorlight.resend, colorlight.syncs, L, m["card_columns"].as<int>(2),
                                            m["card_width"].as<int>(0), m["card_height"].as<int>(0));
       drop_root(user, group);
       card->start();
@@ -182,7 +182,7 @@ static int usage() {
   fprintf(stderr,
           "usage: ledengine [--config $LEDPOSTER_DATA/config.yaml]\n"
           "                 [--socket PATH] [--preview-socket PATH] [--user NAME] [--group NAME]\n"
-          "                 [--colorlight IFACE [--colorlight-hz N] [--colorlight-resend N]]\n"
+          "                 [--colorlight IFACE [--colorlight-hz N] [--colorlight-resend N] [--colorlight-syncs 1|2]]\n"
           "                 [--pattern P [--color RRGGBB] | --play MEDIA_ID | --playlist NAME |\n"
           "                  --effect E | --mode clock|idle | --text TEXT]\n"
           "  P: panel-id, solid, cycle, rows, cols\n"
@@ -513,6 +513,7 @@ int main(int argc, char **argv) {
     else if (k == "--colorlight") colorlight.ifname = v;
     else if (k == "--colorlight-hz") colorlight.hz = std::stoi(v);
     else if (k == "--colorlight-resend") colorlight.resend = std::stoi(v);
+    else if (k == "--colorlight-syncs") colorlight.syncs = std::stoi(v);
     else if (k == "--pattern") pattern = v;
     else if (k == "--color") color = std::stoul(v, nullptr, 16);
     else if (k == "--play") play = v;
