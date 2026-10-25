@@ -1,10 +1,15 @@
-/* Caches only the app shell. API calls and media always go to the network. */
-const CACHE = "ledposter-shell-v5";  // bump when app.js/app.css change, or installed apps keep the old copy
+/* Caches only the app shell, as an offline fallback. API calls and media always go to the network.
+   Network first, revalidating the browser's HTTP cache (cache: "no-cache", a cheap 304 when nothing
+   changed): a deploy shows on the next normal reload, no hard refresh and no version bump needed.
+   (Cache-first served the old app.js after a deploy: the new worker filled its cache from the
+   browser's heuristically fresh copy.) */
+const CACHE = "ledposter-shell-v6";
 const SHELL = ["/static/app.css", "/static/app.js", "/static/render.js", "/static/icon.svg",
                "/static/icon-192.png", "/static/icon-512.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 self.addEventListener("activate", (e) => {
   e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
@@ -22,9 +27,9 @@ self.addEventListener("fetch", (e) => {
     return;
   }
   if (SHELL.includes(url.pathname)) {
-    e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((r) => {
+    e.respondWith(fetch(e.request, { cache: "no-cache" }).then((r) => {
       if (r.ok) caches.open(CACHE).then((c) => c.put(e.request, r.clone()));
       return r;
-    })));
+    }).catch(() => caches.match(e.request)));
   }
 });
