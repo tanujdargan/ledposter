@@ -305,6 +305,10 @@ details.card ol { padding-left: 20px; margin: 8px 0; font-size: 14px; color: var
 .hc-controls { flex: 1; min-width: 0; }
 .hc-controls .mini-title:first-child { margin-top: 0; }
 .hc-controls .seg span { min-height: 34px; padding: 0 4px; }
+.slider.mini { margin: 0; }
+.slider.mini .top { margin-bottom: 0; align-items: baseline; }
+.slider.mini .top b { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.slider.mini .top .num { font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; }
 .statusline { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 4px 0; font-size: 13px; color: var(--muted); }
 .statusline span { white-space: nowrap; }
 .statusline b { color: var(--text); font-weight: 600; }

@@ -57,9 +57,28 @@ DEFAULTS = {
     "maintenance": {"enabled": True, "day": 6, "hour": 4},
     "last_mode": {},
     # The time (and date) the engine draws on top of whatever plays; applied by reload_config.
-    "clock_overlay": {"enabled": False, "position": "bottom-center", "hour24": True, "date": True,
-                      "time_size": "m", "date_size": "s"},
+    # Sizes in px (CLOCK_TIME_PX, CLOCK_DATE_PX), date_px 0 = no date.
+    "clock_overlay": {"enabled": False, "position": "bottom-center", "hour24": True, "time_px": 32, "date_px": 9},
 }
+
+# The px sizes the engine has a font for (engine/src/clockfont.h, made by tools/clockfont.py).
+CLOCK_TIME_PX, CLOCK_DATE_PX = (14, 48), (8, 16)
+# Before the sliders the sizes were names; these are the px those fonts had, so a migrated
+# config looks the same.
+CLOCK_TIME_NAMES = {"s": 24, "m": 32, "l": 39, "xl": 46}
+CLOCK_DATE_NAMES = {"s": 9, "m": 12, "l": 16}
+
+
+def migrate_clock_overlay(co):
+    """clock_overlay with time_size/date_size/date (before the sliders) turned into time_px/date_px.
+    Returns a new dict; px keys already there win, unknown names fall back to the defaults."""
+    co = dict(co)
+    ts, ds, date = co.pop("time_size", None), co.pop("date_size", None), co.pop("date", None)
+    if "time_px" not in co and ts is not None:
+        co["time_px"] = CLOCK_TIME_NAMES.get(ts, DEFAULTS["clock_overlay"]["time_px"])
+    if "date_px" not in co and (ds is not None or date is not None):
+        co["date_px"] = 0 if date is False else CLOCK_DATE_NAMES.get(ds or "s", DEFAULTS["clock_overlay"]["date_px"])
+    return co
 
 
 def data_dir():
@@ -88,6 +107,8 @@ def load(p=None, allow_empty=True):
             cfg = {}
         if not isinstance(cfg, dict):
             raise ValueError(f"{p}: top level must be a mapping")
+    if isinstance(cfg.get("clock_overlay"), dict):  # before the defaults fill in time_px/date_px
+        cfg["clock_overlay"] = migrate_clock_overlay(cfg["clock_overlay"])
     for key, default in DEFAULTS.items():
         if isinstance(default, dict):
             if not isinstance(cfg.get(key), dict):  # missing, or a bare `web:` (null)

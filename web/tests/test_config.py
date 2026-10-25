@@ -1,5 +1,6 @@
 import os
 import stat
+from pathlib import Path
 
 import pytest
 import yaml
@@ -44,3 +45,28 @@ def test_save_creates_dir(tmp_path):
     p = tmp_path / "deeper" / "config.yaml"
     config.save({"matrix": {}}, str(p))
     assert yaml.safe_load(p.read_text()) == {"version": 1, "matrix": {}}
+
+
+def test_clock_overlay_sizes_migrate_to_px(tmp_path):
+    p = tmp_path / "config.yaml"
+    for old, px in [({"time_size": "xl", "date_size": "l", "date": True}, (46, 16)),
+                    ({"time_size": "s", "date_size": "m", "date": False}, (24, 0)),
+                    ({"time_size": "l"}, (39, 9)),  # no date keys: the default date
+                    ({"date": True}, (32, 9)),
+                    ({}, (32, 9)),
+                    ({"time_px": 20, "date_px": 0, "time_size": "xl", "date": True}, (20, 0))]:  # px wins
+        p.write_text(yaml.safe_dump({"clock_overlay": {"enabled": True, "position": "center", **old}}))
+        co = config.load(str(p))["clock_overlay"]
+        assert (co["time_px"], co["date_px"]) == px, old
+        assert co["enabled"] is True and co["position"] == "center"
+        assert not {"time_size", "date_size", "date"} & co.keys()
+
+
+def test_clock_px_ranges_match_the_engine_fonts():
+    h = (Path(__file__).parents[2] / "engine/src/clockfont.h").read_text()
+    for group, (lo, hi) in (("kClockTime", config.CLOCK_TIME_PX), ("kClockDate", config.CLOCK_DATE_PX)):
+        assert f"constexpr int {group}MinPx = {lo}, {group}MaxPx = {hi};" in h
+    for px in [*config.CLOCK_TIME_NAMES.values(), config.DEFAULTS["clock_overlay"]["time_px"]]:
+        assert config.CLOCK_TIME_PX[0] <= px <= config.CLOCK_TIME_PX[1]
+    for px in [*config.CLOCK_DATE_NAMES.values(), config.DEFAULTS["clock_overlay"]["date_px"]]:
+        assert config.CLOCK_DATE_PX[0] <= px <= config.CLOCK_DATE_PX[1]

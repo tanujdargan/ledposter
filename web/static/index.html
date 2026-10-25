@@ -82,9 +82,11 @@
       <div class="hc-body">
         <div class="clock-grid mini" id="hc-pos" role="radiogroup" aria-label="Position"></div>
         <div class="hc-controls">
-          <div class="mini-title">Time size</div><div id="hc-time"></div>
-          <div class="mini-title">Date</div><div id="hc-date"></div>
-          <div id="hc-fmt" style="margin-top:10px"></div>
+          <label class="slider mini"><span class="top"><b>Time size</b><span class="num" id="hc-time-val"></span></span>
+            <input type="range" id="hc-time" min="14" max="48" step="1" aria-label="Time size"></label>
+          <label class="slider mini"><span class="top"><b>Date</b><span class="num" id="hc-date-val"></span></span>
+            <input type="range" id="hc-date" min="7" max="16" step="1" aria-label="Date size (leftmost: no date)"></label>
+          <div id="hc-fmt" style="margin-top:6px"></div>
         </div>
       </div>
     </div>
@@ -252,11 +254,11 @@
       <div id="co-fmt"></div>
     </div>
     <div class="card">
-      <h2>Time size</h2>
-      <div id="co-time"></div>
-      <h2 style="margin-top:16px">Date size</h2>
-      <div id="co-dsize"></div>
-      <p class="help" style="margin:8px 4px 0">XL fills the wall's width.</p>
+      <label class="slider"><span class="top"><b>Time size</b><span class="num" id="co-time-val"></span></span>
+        <input type="range" id="co-time" min="14" max="48" step="1" aria-label="Time size"></label>
+      <label class="slider"><span class="top"><b>Date size</b><span class="num" id="co-dsize-val"></span></span>
+        <input type="range" id="co-dsize" min="7" max="16" step="1" aria-label="Date size (leftmost: no date)"></label>
+      <p class="help" style="margin:4px 4px 0">The largest time fills the wall's width. Slide the date all the way left to hide it.</p>
     </div>
     <p class="note" id="co-tz"></p>
   </section>

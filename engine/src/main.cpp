@@ -407,18 +407,16 @@ static Settings load_settings(YAML::Node cfg) {
   check(t.timeout_s > 0, "stream.timeout_s must be > 0");
   YAML::Node co = cfg["clock_overlay"];
   s.clock.enabled = co["enabled"].as<bool>(false), s.clock.hour24 = co["hour24"].as<bool>(true);
-  s.clock.date = co["date"].as<bool>(true);
   const std::string pos = co["position"].as<std::string>("bottom-center");
   auto it = std::find(kClockPositions.begin(), kClockPositions.end(), pos);
   check(it != kClockPositions.end(), "clock_overlay.position must be top-left, top-center, ... bottom-right");
   s.clock.pos = int(it - kClockPositions.begin());
-  auto size = [&](const char *key, const std::vector<std::string> &sizes, const char *def, const char *err) {
-    auto i = std::find(sizes.begin(), sizes.end(), co[key].as<std::string>(def));
-    check(i != sizes.end(), err);
-    return int(i - sizes.begin());
+  auto opt = [&](const char *key, auto def) -> std::optional<decltype(def)> {
+    if (!co[key]) return std::nullopt;
+    return co[key].as<decltype(def)>();
   };
-  s.clock.time_size = size("time_size", kClockTimeSizes, "m", "clock_overlay.time_size must be s, m, l or xl");
-  s.clock.date_size = size("date_size", kClockDateSizes, "s", "clock_overlay.date_size must be s, m or l");
+  resolve_clock_sizes(s.clock, {opt("time_px", 0), opt("date_px", 0), opt("time_size", std::string()),
+                                opt("date_size", std::string()), opt("date", true)});
   return s;
 }
 

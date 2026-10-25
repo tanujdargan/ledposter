@@ -4,28 +4,52 @@
   python3 tools/clockfont.py Inter-VariableFont_slnt,wght.ttf > engine/src/clockfont.h
 
 Inter (https://rsms.me/inter, SIL Open Font License 1.1), rasterized here once with Pillow so
-the engine needs no font library and does no rasterizing on the Pi: the time in Inter Light
-(Regular at the smallest size, where Light gets too thin for the LEDs), the date in Inter Medium,
-small caps-height text with a little tracking. One font per size the overlay offers
-(clock_overlay.time_size s/m/l/xl, date_size s/m/l): the widest time, "00:00" or "03:33", fits
-the 128px wall between its 6px margins at xl. Needs Pillow; the
-variable font, so both weights come from one file (a static TTF works too, at its own weight).
+the engine needs no font library and does no rasterizing on the Pi. One font per pixel size the
+overlay offers (clock_overlay.time_px TIME_PX, date_px DATE_PX): the time in Inter Light, a
+little heavier below 32px where Light gets too thin for the LEDs; the date in Inter Medium
+(SemiBold-ish at 8px), small caps-height text with a little tracking. 8px is the smallest date
+that still reads on the LEDs (at 7 and 6 the 5 and the 3 merge). Only the characters the overlay draws: digits
+and the colon for the time, the letters of the day and month names (text.h clock_date), digits
+and the space for the date. The tracking tightens with the size so the widest time of the day
+(every minute, 24h and 12h) stays inside the 6px margins of the 128px wall; main() checks it.
+Use a Pillow with Raqm (python3 -c "from PIL import features; print(features.check('raqm'))"):
+the basic layout rounds the advances differently. Needs the variable font, so every weight
+comes from one file (a static TTF works too, at its own weight).
 """
 import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-DIGITS, CAPS = "0123456789:", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
-# name, size px, weight, tracking px, characters; each group in size order (kClockTimeFonts...)
-FONTS = [
-    ("kClockTimeS", 24, 400, 1, DIGITS),
-    ("kClockTimeM", 32, 300, 1, DIGITS),
-    ("kClockTimeL", 39, 300, 0, DIGITS),
-    ("kClockTimeXL", 46, 300, -2, DIGITS),
-    ("kClockDateS", 9, 500, 1, CAPS),
-    ("kClockDateM", 12, 500, 1, CAPS),
-    ("kClockDateL", 16, 500, 1, CAPS),
-]
+TIME_PX, DATE_PX = range(14, 49), range(8, 17)
+WALL_W, MARGIN = 128, 6  # overlay.h ClockOverlay::kMargin
+DAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+TIME_CHARS = "0123456789:"
+DATE_CHARS = "".join(sorted(set("".join(DAYS + MONTHS)))) + "0123456789 "
+TIMES = sorted({f"{h:02d}:{m:02d}" for h in range(24) for m in range(60)} |
+               {f"{h % 12 or 12}:{m:02d}" for h in range(24) for m in range(60)})
+DATES = [f"{d} {n} {m}" for d in DAYS for n in (28, 30) for m in MONTHS]  # the widest day numbers
+
+
+def lerp(anchors, px):
+    """Piecewise linear through (px, value) anchors, flat past the ends."""
+    if px <= anchors[0][0]:
+        return anchors[0][1]
+    for (a, va), (b, vb) in zip(anchors, anchors[1:]):
+        if px <= b:
+            return va + (vb - va) * (px - a) / (b - a)
+    return anchors[-1][1]
+
+
+# The sizes the overlay had before the sliders (24/32/39/46 time, 9/12/16 date) are anchors, so
+# configs migrated from time_size/date_size look exactly as before.
+def time_style(px):
+    """weight, tracking before the fit check."""
+    return round(lerp([(14, 500), (24, 400), (32, 300)], px)), round(lerp([(32, 1), (39, 0), (46, -2)], px))
+
+
+def date_style(px):
+    return round(lerp([(8, 550), (9, 500)], px)), 1
 
 
 def load(path, size, weight):
@@ -57,6 +81,28 @@ def glyphs(font, chars, tracking):
     return out
 
 
+def ink_width(gs, text):
+    """Like overlay.h ink_box: the ink's width from the first glyph's ink to the last one's."""
+    by, pen, x0, x1 = {g[0]: g for g in gs}, 0, 1 << 20, -(1 << 20)
+    for ch in text:
+        g = by[ord(ch)]
+        if g[3]:
+            x0, x1 = min(x0, pen + g[1]), max(x1, pen + g[1] + g[3])
+        pen += g[5]
+    return x1 - x0
+
+
+def build(path, px, style, chars, texts):
+    """The font at px, its tracking tightened (down to 3px under the style's) until every text fits."""
+    weight, tracking = style(px)
+    for t in range(tracking, tracking - 4, -1):
+        gs = glyphs(load(path, px, weight), chars, t)
+        widest = max(ink_width(gs, s) for s in texts)
+        if widest <= WALL_W - 2 * MARGIN:
+            return gs, weight, t, widest
+    sys.exit(f"{px}px: the widest text is {widest}px, more than {WALL_W - 2 * MARGIN}px")
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -71,22 +117,28 @@ def main():
       "  const AaGlyph *get(uint32_t cp) const {\n"
       "    for (int i = 0; i < n; i++)\n      if (glyphs[i].cp == cp) return &glyphs[i];\n"
       "    return nullptr;\n  }\n};\n")
-    for name, size, weight, tracking, chars in FONTS:
-        gs = glyphs(load(sys.argv[1], size, weight), chars, tracking)
-        alpha, table = bytearray(), []
-        for cp, x, y, gw, gh, adv, a in gs:
-            table.append(f"    {{{cp}, {x}, {y}, {gw}, {gh}, {adv}, {len(alpha)}}},  // {chr(cp)!r}")
-            alpha += a
-        w(f"\n// Inter {size}px, weight {weight}, tracking {tracking}px\n")
-        w(f"inline const uint8_t {name}Alpha[] = {{\n")
-        for i in range(0, len(alpha), 24):
-            w("    " + ",".join(str(v) for v in alpha[i:i + 24]) + ",\n")
-        w("};\n")
-        w(f"inline const AaGlyph {name}Glyphs[] = {{\n" + "\n".join(table) + "\n};\n")
-        w(f"inline const AaFont {name}{{{name}Glyphs, {len(gs)}, {name}Alpha}};\n")
-    for group in ("kClockTime", "kClockDate"):
-        names = [f[0] for f in FONTS if f[0].startswith(group)]
-        w(f"\ninline const AaFont *const {group}Fonts[] = {{{', '.join('&' + n for n in names)}}};\n")
+    total = 0
+    for group, sizes, style, chars, texts in (("kClockTime", TIME_PX, time_style, TIME_CHARS, TIMES),
+                                              ("kClockDate", DATE_PX, date_style, DATE_CHARS, DATES)):
+        for px in sizes:
+            name = f"{group}{px}"
+            gs, weight, tracking, widest = build(sys.argv[1], px, style, chars, texts)
+            alpha, table = bytearray(), []
+            for cp, x, y, gw, gh, adv, a in gs:
+                table.append(f"    {{{cp}, {x}, {y}, {gw}, {gh}, {adv}, {len(alpha)}}},  // {chr(cp)!r}")
+                alpha += a
+            total += len(alpha)
+            w(f"\n// Inter {px}px, weight {weight}, tracking {tracking}px, widest {widest}px\n")
+            w(f"inline const uint8_t {name}Alpha[] = {{\n")
+            for i in range(0, len(alpha), 24):
+                w("    " + ",".join(str(v) for v in alpha[i:i + 24]) + ",\n")
+            w("};\n")
+            w(f"inline const AaGlyph {name}Glyphs[] = {{\n" + "\n".join(table) + "\n};\n")
+            w(f"inline const AaFont {name}{{{name}Glyphs, {len(gs)}, {name}Alpha}};\n")
+        w(f"\n// {group}Fonts[px - {group}MinPx]\n"
+          f"constexpr int {group}MinPx = {sizes[0]}, {group}MaxPx = {sizes[-1]};\n"
+          f"inline const AaFont *const {group}Fonts[] = {{{', '.join(f'&{group}{px}' for px in sizes)}}};\n")
+    print(f"{len(TIME_PX) + len(DATE_PX)} fonts, {total} alpha bytes", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -684,8 +684,9 @@ views.schedule = async () => { views.current = "schedule"; schedule = await api(
 
 /* ---- clock overlay (More > Clock and Home share the state and the controls) ---- */
 const CLOCK_POS = ["top-left", "top-center", "top-right", "middle-left", "center", "middle-right", "bottom-left", "bottom-center", "bottom-right"];
-const TIME_SIZES = [["s", "S"], ["m", "M"], ["l", "L"], ["xl", "XL"]], DATE_SIZES = [["s", "S"], ["m", "M"], ["l", "L"]];
-let clockOv = null;
+// Size sliders in px (the engine has a font per px, /api/clock_overlay checks the range); the
+// date slider's leftmost stop, one below its smallest size, is no date (date_px 0).
+let clockOv = null, lastDatePx = 9;
 const saveClock = debounce(async () => { try { clockOv = await api("/api/clock_overlay", { method: "PUT", body: clockOv }); } catch (e) { toast(e.message, true); } }, 300);
 function segRadios(name, opts, cur, onpick, label) {
   return h("div", { class: "seg", role: "radiogroup", "aria-label": label }, opts.map(([v, l]) => {
@@ -704,24 +705,32 @@ function bindClock() {
   if (!c) return;
   const fmt = (name) => segRadios(name, [["24", "24-hour"], ["12", "12-hour"]], c.hour24 ? "24" : "12", (v) => clockChange({ hour24: v === "24" }), "Time format");
   // More > Clock
-  $("#co-enabled").checked = c.enabled; $("#co-date").checked = c.date;
+  if (c.date_px) lastDatePx = c.date_px;
+  const sizes = (time, date) => {
+    setSlider($(time), c.time_px, $(`${time}-val`), `${c.time_px} px`);
+    setSlider($(date), c.date_px || +$(date).min, $(`${date}-val`), c.date_px ? `${c.date_px} px` : "Off");
+  };
+  $("#co-enabled").checked = c.enabled; $("#co-date").checked = !!c.date_px;
   posGrid($("#co-pos"), c);
   $("#co-fmt").replaceChildren(fmt("co-fmt"));
-  $("#co-time").replaceChildren(segRadios("co-time", TIME_SIZES, c.time_size, (v) => clockChange({ time_size: v }), "Time size"));
-  $("#co-dsize").replaceChildren(segRadios("co-dsize", DATE_SIZES, c.date_size, (v) => clockChange({ date_size: v, date: true }), "Date size"));
+  sizes("#co-time", "#co-dsize");
   $("#co-tz").textContent = status ? `Uses the wall's clock (${status.timezone}, now ${status.time}).` : "";
-  // Home: the date's Off folds into its size picker
+  // Home: the date's Off is its slider's leftmost stop
   $("#hc-enabled").checked = c.enabled;
-  $("#hc-sub").textContent = c.enabled ? `${c.position.replace("-", " ")} · ${c.hour24 ? "24-hour" : "12-hour"}${c.date ? " · with date" : ""}` : "Off · pick a spot to show it";
+  $("#hc-sub").textContent = c.enabled ? `${c.position.replace("-", " ")} · ${c.hour24 ? "24-hour" : "12-hour"}${c.date_px ? " · with date" : ""}` : "Off · pick a spot to show it";
   posGrid($("#hc-pos"), c);
-  $("#hc-time").replaceChildren(segRadios("hc-time", TIME_SIZES, c.time_size, (v) => clockChange({ time_size: v }), "Time size"));
-  $("#hc-date").replaceChildren(segRadios("hc-date", [["off", "Off"], ...DATE_SIZES], c.date ? c.date_size : "off",
-    (v) => clockChange(v === "off" ? { date: false } : { date: true, date_size: v }), "Date"));
+  sizes("#hc-time", "#hc-date");
   $("#hc-fmt").replaceChildren(fmt("hc-fmt"));
 }
 $("#co-enabled").onchange = (e) => clockChange({ enabled: e.target.checked });
 $("#hc-enabled").onchange = (e) => clockChange({ enabled: e.target.checked });
-$("#co-date").onchange = (e) => clockChange({ date: e.target.checked });
+$("#co-date").onchange = (e) => clockChange({ date_px: e.target.checked ? lastDatePx : 0 });
+// Labels follow the drag; saveClock's debounce sends one PUT once the thumb rests or is let go.
+for (const id of ["#co-time", "#hc-time"]) $(id).addEventListener("input", (e) => clockChange({ time_px: +e.target.value }));
+for (const id of ["#co-dsize", "#hc-date"]) $(id).addEventListener("input", (e) => {
+  const v = +e.target.value;
+  clockChange({ date_px: v > +e.target.min ? v : 0 });
+});
 async function loadClock() { clockOv = await api("/api/clock_overlay"); bindClock(); }
 views.clock = async () => { views.current = "clock"; await loadClock(); };
 

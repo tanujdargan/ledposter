@@ -18,7 +18,7 @@ from typing import Any, Literal, Optional
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from python_multipart import MultipartParser
 import yaml
 
@@ -289,9 +289,23 @@ class ClockOverlay(BaseModel):
     position: Literal["top-left", "top-center", "top-right", "middle-left", "center", "middle-right",
                       "bottom-left", "bottom-center", "bottom-right"] = "bottom-center"
     hour24: bool = True
-    date: bool = Field(True, description="The date under the time")
-    time_size: Literal["s", "m", "l", "xl"] = Field("m", description="s, m, l or xl (xl fills the wall's width)")
-    date_size: Literal["s", "m", "l"] = "s"
+    time_px: int = Field(32, ge=config.CLOCK_TIME_PX[0], le=config.CLOCK_TIME_PX[1],
+                         description="The time's font size in px (the largest fills the wall's width)")
+    date_px: int = Field(9, description=f"The date's font size in px, {config.CLOCK_DATE_PX[0]} to "
+                                        f"{config.CLOCK_DATE_PX[1]}, or 0 for no date")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _old_sizes(cls, v):  # time_size/date_size/date from before the sliders (an old cached app)
+        return config.migrate_clock_overlay(v) if isinstance(v, dict) else v
+
+    @field_validator("date_px")
+    @classmethod
+    def _date_px(cls, v):
+        lo, hi = config.CLOCK_DATE_PX
+        if v != 0 and not lo <= v <= hi:
+            raise ValueError(f"must be 0 (no date) or {lo} to {hi}")
+        return v
 
 
 class TokenCreate(BaseModel):

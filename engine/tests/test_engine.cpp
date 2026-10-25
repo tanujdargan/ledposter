@@ -468,7 +468,7 @@ static void test_clock_overlay() {
   assert(c.update(cfg, t, 128, 192) && c.text == "11:00|SAT 25 OCT");
   assert(!c.update(cfg, t, 128, 192) && !c.update(cfg, t + 59, 128, 192));
   assert(c.update(cfg, t + 60, 128, 192) && c.text == "11:01|SAT 25 OCT");
-  cfg.hour24 = false, cfg.date = false, cfg.pos = 8;  // bottom-right
+  cfg.hour24 = false, cfg.date_px = 0, cfg.pos = 8;  // bottom-right
   assert(c.update(cfg, t + 60, 128, 192) && c.text == "11:01|");
   assert(c.x >= 0 && c.y >= 0 && c.x + c.layer.w <= 128 && c.y + c.layer.h <= 192);
   assert(c.x + c.layer.w > 120 && c.y + c.layer.h > 184);
@@ -478,27 +478,83 @@ static void test_clock_overlay() {
   for (int y = 0; y < 192; y++)
     for (int x = 0; x < 128; x++) lit += f.rgb[(size_t(y) * 128 + x) * 3] > 100 && (assert(x > 40 && y > 150), true);
   assert(lit > 50);
-  // Every size fits the wall at every position with the widest times ("00:00", "03:33"; 12h is
-  // never wider), and each time size is taller than the one before.
+  // Every time of the day, 24h and 12h, fits inside the margins at every time size (clockfont.py
+  // tightens the tracking for it), and the date at every date size.
+  for (int px = kClockTimeMinPx; px <= kClockTimeMaxPx; px++) {
+    const AaFont &f = *kClockTimeFonts[px - kClockTimeMinPx];
+    for (int m = 0; m < 1440; m++) {
+      std::tm tm{};
+      tm.tm_hour = m / 60, tm.tm_min = m % 60;
+      for (bool h24 : {true, false}) {
+        ClockStyle cs;
+        cs.hour24 = h24;
+        const InkBox b = ink_box(f, clock_time(tm, cs));
+        assert(b.x1 - b.x0 <= 128 - 2 * ClockOverlay::kMargin);
+      }
+    }
+  }
+  for (int px = kClockDateMinPx; px <= kClockDateMaxPx; px++)
+    for (int d = 0; d < 7; d++)
+      for (int mon = 0; mon < 12; mon++) {
+        std::tm tm{};
+        tm.tm_wday = d, tm.tm_mon = mon, tm.tm_mday = 28;
+        const InkBox b = ink_box(*kClockDateFonts[px - kClockDateMinPx], clock_date(tm));
+        assert(b.x1 - b.x0 > 0 && b.x1 - b.x0 <= 128 - 2 * ClockOverlay::kMargin);
+      }
+  // Rendered: the layer stays on the canvas at every position, and each size is taller than the
+  // one before (the date's height counts once it is on).
   const std::time_t day = 1761350400;  // 2025-10-25 00:00 UTC
-  for (int ds = 0; ds < int(kClockDateSizes.size()); ds++) {
+  for (int dpx : {0, kClockDateMinPx, 12, kClockDateMaxPx}) {
     int last_h = 0;
-    for (int ts = 0; ts < int(kClockTimeSizes.size()); ts++) {
+    for (int tpx = kClockTimeMinPx; tpx <= kClockTimeMaxPx; tpx++) {
       int hh = 0;
-      for (std::time_t at : {day, day + 3 * 3600 + 33 * 60, day + 12 * 3600})
+      for (std::time_t at : {day, day + 4 * 3600 + 44 * 60, day + 12 * 3600})
         for (bool h24 : {true, false})
           for (int pos = 0; pos < 9; pos++) {
             ClockOverlay o;
             ClockOverlayCfg k;
-            k.enabled = true, k.hour24 = h24, k.pos = pos, k.time_size = ts, k.date_size = ds;
+            k.enabled = true, k.hour24 = h24, k.pos = pos, k.time_px = tpx, k.date_px = dpx;
             assert(o.update(k, at, 128, 192));
             assert(o.x >= 0 && o.y >= 0 && o.x + o.layer.w <= 128 && o.y + o.layer.h <= 192);
             hh = std::max(hh, o.layer.h);
           }
-      assert(hh > last_h);
+      assert(hh >= last_h);
       last_h = hh;
     }
   }
+  {
+    int last_h = 0;
+    for (int dpx = kClockDateMinPx; dpx <= kClockDateMaxPx; dpx++) {
+      ClockOverlay o;
+      ClockOverlayCfg k;
+      k.enabled = true, k.date_px = dpx;
+      assert(o.update(k, day, 128, 192) && o.layer.h >= last_h);
+      last_h = o.layer.h;
+    }
+  }
+  // Config sizes: px, or the names of a config from before the sliders (their old fonts).
+  auto sizes = [](const ClockSizeKeys &k) {
+    ClockOverlayCfg c;
+    resolve_clock_sizes(c, k);
+    return std::pair{c.time_px, c.date_px};
+  };
+  auto bad = [](const ClockSizeKeys &k) {
+    ClockOverlayCfg c;
+    try {
+      resolve_clock_sizes(c, k);
+    } catch (const std::runtime_error &) {
+      return true;
+    }
+    return false;
+  };
+  assert(sizes({}) == std::pair(32, 9));
+  assert(sizes({28, 0, {}, {}, {}}) == std::pair(28, 0));
+  assert(sizes({{}, {}, "xl", "l", true}) == std::pair(46, 16));
+  assert(sizes({{}, {}, "s", "m", false}) == std::pair(24, 0));
+  assert(sizes({40, 11, "s", "s", false}) == std::pair(40, 11));  // px wins
+  assert(bad({kClockTimeMinPx - 1, {}, {}, {}, {}}) && bad({kClockTimeMaxPx + 1, {}, {}, {}, {}}));
+  assert(bad({{}, kClockDateMinPx - 1, {}, {}, {}}) && bad({{}, kClockDateMaxPx + 1, {}, {}, {}}));
+  assert(bad({{}, {}, "xxl", {}, {}}) && bad({{}, {}, {}, "xl", {}}));
 }
 
 int main(int argc, char **argv) {

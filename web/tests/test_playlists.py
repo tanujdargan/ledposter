@@ -137,17 +137,22 @@ def test_docs_and_openapi(authed):
 
 def test_clock_overlay_saves_and_reloads(authed, engine, data):
     assert authed.get("/api/clock_overlay").json() == {"enabled": False, "position": "bottom-center", "hour24": True,
-                                                       "date": True, "time_size": "m", "date_size": "s"}
-    body = {"enabled": True, "position": "top-right", "hour24": False, "date": False, "time_size": "xl", "date_size": "l"}
+                                                       "time_px": 32, "date_px": 9}
+    body = {"enabled": True, "position": "top-right", "hour24": False, "time_px": 48, "date_px": 0}
     assert authed.put("/api/clock_overlay", json=body).json() == body
     assert yaml.safe_load((data / "config.yaml").read_text())["clock_overlay"] == body
     assert engine.calls[-1]["cmd"] == "reload_config"
-    assert authed.put("/api/clock_overlay", json={**body, "position": "left"}).status_code == 422
-    assert authed.put("/api/clock_overlay", json={**body, "time_size": "xxl"}).status_code == 422
-    assert authed.put("/api/clock_overlay", json={**body, "date_size": "xl"}).status_code == 422
-    # A config from before the sizes existed reads with the defaults.
-    old = {"enabled": True, "position": "center", "hour24": True, "date": True}
-    assert authed.put("/api/clock_overlay", json=old).json() == {**old, "time_size": "m", "date_size": "s"}
+    for ok in ({"time_px": 14, "date_px": 8}, {"time_px": 27, "date_px": 16}):
+        assert authed.put("/api/clock_overlay", json={**body, **ok}).json() == {**body, **ok}
+    for bad in ({"position": "left"}, {"time_px": 13}, {"time_px": 49}, {"time_px": 20.5},
+                {"date_px": 7}, {"date_px": 17}, {"date_px": -1}):
+        assert authed.put("/api/clock_overlay", json={**body, **bad}).status_code == 422, bad
+    # An app from before the sliders sends size names: the px of the fonts they had.
+    old = {"enabled": True, "position": "center", "hour24": True, "date": True, "time_size": "xl", "date_size": "m"}
+    assert authed.put("/api/clock_overlay", json=old).json() == {"enabled": True, "position": "center", "hour24": True,
+                                                                 "time_px": 46, "date_px": 12}
+    assert authed.put("/api/clock_overlay", json={**old, "date": False}).json()["date_px"] == 0
+    assert authed.put("/api/clock_overlay", json={**old, "time_size": "xxl"}).json()["time_px"] == 32
 
 
 def test_next_item(authed, engine):

@@ -10,6 +10,7 @@
 #include <ctime>
 #include <functional>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -234,19 +235,48 @@ inline const std::vector<std::string> kClockPositions = {
     "top-left", "top-center", "top-right", "middle-left", "center", "middle-right",
     "bottom-left", "bottom-center", "bottom-right"};
 
-// Sizes (clock_overlay.time_size, date_size): one pre-rasterized font each (clockfont.h).
-inline const std::vector<std::string> kClockTimeSizes = {"s", "m", "l", "xl"};
-inline const std::vector<std::string> kClockDateSizes = {"s", "m", "l"};
+// Sizes in px (clock_overlay.time_px, date_px): one pre-rasterized font per px in
+// kClockTimeMinPx..MaxPx and kClockDateMinPx..MaxPx (clockfont.h). Configs from before the
+// sliders have time_size/date_size names instead: the px those fonts had (resolve_clock_sizes).
+inline const std::vector<std::pair<std::string, int>> kClockTimeSizes = {{"s", 24}, {"m", 32}, {"l", 39}, {"xl", 46}};
+inline const std::vector<std::pair<std::string, int>> kClockDateSizes = {{"s", 9}, {"m", 12}, {"l", 16}};
 
 struct ClockOverlayCfg {
-  bool enabled = false, hour24 = true, date = true;
+  bool enabled = false, hour24 = true;
   int pos = 7;  // index in kClockPositions
-  int time_size = 1, date_size = 0;  // index in kClockTimeSizes, kClockDateSizes
+  int time_px = 32, date_px = 9;  // date_px 0: no date
   bool operator==(const ClockOverlayCfg &o) const {
-    return enabled == o.enabled && hour24 == o.hour24 && date == o.date && pos == o.pos &&
-           time_size == o.time_size && date_size == o.date_size;
+    return enabled == o.enabled && hour24 == o.hour24 && pos == o.pos && time_px == o.time_px &&
+           date_px == o.date_px;
   }
 };
+
+// The clock_overlay size keys as found in the config (absent ones empty).
+struct ClockSizeKeys {
+  std::optional<int> time_px, date_px;
+  std::optional<std::string> time_size, date_size;
+  std::optional<bool> date;
+};
+// Sets c's sizes from the keys: px when given, else the old names (a config from before the
+// sliders, until the web app next saves it; date: false was no date). Throws on a bad value.
+inline void resolve_clock_sizes(ClockOverlayCfg &c, const ClockSizeKeys &k) {
+  auto named = [](const std::optional<std::string> &n, const std::vector<std::pair<std::string, int>> &sizes,
+                  const char *def, const char *err) {
+    for (auto &[name, px] : sizes)
+      if (name == n.value_or(def)) return px;
+    throw std::runtime_error(err);
+  };
+  c.time_px = k.time_px ? *k.time_px : named(k.time_size, kClockTimeSizes, "m", "clock_overlay.time_size must be s, m, l or xl");
+  c.date_px = k.date_px            ? *k.date_px
+              : !k.date.value_or(true) ? 0
+                                       : named(k.date_size, kClockDateSizes, "s", "clock_overlay.date_size must be s, m or l");
+  if (c.time_px < kClockTimeMinPx || c.time_px > kClockTimeMaxPx)
+    throw std::runtime_error("clock_overlay.time_px must be " + std::to_string(kClockTimeMinPx) + " to " +
+                             std::to_string(kClockTimeMaxPx));
+  if (c.date_px != 0 && (c.date_px < kClockDateMinPx || c.date_px > kClockDateMaxPx))
+    throw std::runtime_error("clock_overlay.date_px must be 0 (no date) or " + std::to_string(kClockDateMinPx) +
+                             " to " + std::to_string(kClockDateMaxPx));
+}
 
 // Ink extent of text in font: left and right of the ink from the pen start, top and bottom
 // from the baseline.
@@ -300,7 +330,7 @@ struct ClockOverlay {
     localtime_r(&now, &tm);
     ClockStyle cs;
     cs.hour24 = c.hour24;
-    const std::string time = clock_time(tm, cs), date = c.date ? clock_date(tm) : "";
+    const std::string time = clock_time(tm, cs), date = c.date_px ? clock_date(tm) : "";
     if (c == cfg && time + "|" + date == text) return false;
     cfg = c, text = time + "|" + date;
     render(time, date, w, h);
@@ -308,7 +338,9 @@ struct ClockOverlay {
   }
 
   void render(const std::string &time, const std::string &date, int w, int h) {
-    const AaFont &tf = *kClockTimeFonts[cfg.time_size], &df = *kClockDateFonts[cfg.date_size];
+    // resolve_clock_sizes validates the sizes; clamped here anyway, an index past the table is no font.
+    const AaFont &tf = *kClockTimeFonts[std::clamp(cfg.time_px, kClockTimeMinPx, kClockTimeMaxPx) - kClockTimeMinPx];
+    const AaFont &df = *kClockDateFonts[std::clamp(cfg.date_px, kClockDateMinPx, kClockDateMaxPx) - kClockDateMinPx];
     const InkBox tb = ink_box(tf, time), db = ink_box(df, date);
     const int tw = tb.x1 - tb.x0, th = tb.y1 - tb.y0;
     const int kGap = std::max(3, th / 5);  // time to date, 5px at the default size
