@@ -39,6 +39,12 @@
 #define LEDPOSTER_FONTS_DIR "/opt/ledposter/vendor/rpi-rgb-led-matrix/fonts"
 #endif
 
+// --colorlight IFACE [--colorlight-hz N] [--colorlight-resend N]
+struct CardOpts {
+  std::string ifname;
+  int hz = 60, resend = 0;
+};
+
 #ifndef LEDPOSTER_SIM
 #include <led-matrix.h>
 
@@ -71,10 +77,10 @@ struct Display {
 
   // user, group: what the library drops root to once the GPIO is set up.
   Display(const YAML::Node &m, const Layout &L, const std::string &, const std::string &user,
-          const std::string &group, const std::string &colorlight)
+          const std::string &group, const CardOpts &colorlight)
       : L(L) {
-    if (!colorlight.empty()) {
-      card = std::make_unique<Colorlight>(colorlight, L, m["card_columns"].as<int>(2));
+    if (!colorlight.ifname.empty()) {
+      card = std::make_unique<Colorlight>(colorlight.ifname, colorlight.hz, colorlight.resend, L, m["card_columns"].as<int>(2));
       drop_root(user, group);
       card->start();
       return;
@@ -147,7 +153,7 @@ struct Display {
   std::chrono::steady_clock::time_point last{};
 
   Display(const YAML::Node &, const Layout &L, const std::string &dump, const std::string &,
-          const std::string &, const std::string &)
+          const std::string &, const CardOpts &)
       : out(L.width, L.height), dump(dump) {}
   ~Display() { write(); }
 
@@ -175,7 +181,7 @@ static int usage() {
   fprintf(stderr,
           "usage: ledengine [--config $LEDPOSTER_DATA/config.yaml]\n"
           "                 [--socket PATH] [--preview-socket PATH] [--user NAME] [--group NAME]\n"
-          "                 [--colorlight IFACE]\n"
+          "                 [--colorlight IFACE [--colorlight-hz N] [--colorlight-resend N]]\n"
           "                 [--pattern P [--color RRGGBB] | --play MEDIA_ID | --playlist NAME |\n"
           "                  --effect E | --mode clock|idle | --text TEXT]\n"
           "  P: panel-id, solid, cycle, rows, cols\n"
@@ -185,7 +191,9 @@ static int usage() {
           "  sets one); the control socket can change it\n"
           "  --colorlight IFACE: drive a Colorlight receiving card on that Ethernet interface\n"
           "  instead of the bonnet (matrix.panels[i] is the card's slot i, matrix.card_columns\n"
-          "  slots per row of the card's frame)\n"
+          "  slots per row of the card's frame); --colorlight-hz: send rate (default 60),\n"
+          "  --colorlight-resend: stop resending an unchanged frame after N sends (default 0 =\n"
+          "  never stop; the card holds the last frame)\n"
           "  --socket, --preview-socket, --user, --group: where the sockets go and whom the\n"
           "  engine drops root to (defaults /run/ledposter/{engine,frames}.sock, daemon:daemon).\n"
           "  As root the config's engine.socket/preview_socket/user/group are ignored (the\n"
@@ -489,7 +497,8 @@ int main(int argc, char **argv) {
   const char *env = getenv("LEDPOSTER_DATA");
   const std::string data = env && *env ? env : "/data", media_dir = data + "/media";
   std::string config_path = data + "/config.yaml", pattern, play, playlist, dump;
-  std::string effect, kind, text, colorlight;
+  std::string effect, kind, text;
+  CardOpts colorlight;
   uint32_t color = 0xffffff;
   PrivSettings flags{"", "", "", ""};  // only what was given; privs.h has the defaults
   if ((argc - 1) % 2) return usage();
@@ -500,7 +509,9 @@ int main(int argc, char **argv) {
     else if (k == "--preview-socket") flags.preview_socket = v;
     else if (k == "--user") flags.user = v;
     else if (k == "--group") flags.group = v;
-    else if (k == "--colorlight") colorlight = v;
+    else if (k == "--colorlight") colorlight.ifname = v;
+    else if (k == "--colorlight-hz") colorlight.hz = std::stoi(v);
+    else if (k == "--colorlight-resend") colorlight.resend = std::stoi(v);
     else if (k == "--pattern") pattern = v;
     else if (k == "--color") color = std::stoul(v, nullptr, 16);
     else if (k == "--play") play = v;

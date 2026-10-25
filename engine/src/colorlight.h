@@ -8,6 +8,9 @@
 //  - the card blanks the whole screen now and then when frames come unevenly or at 30Hz, and holds
 //    the last frame steady when they stop; a fixed 60Hz stream held solid (120 too, 250 shimmered).
 //    So a thread sends the newest frame on a fixed grid, whatever the frame loop is doing.
+//    Filmed later (light on a sheet, IMG_0019): resending a still at 60Hz made the whole wall pop
+//    ~2% brighter a few times a second; at 120Hz, or sent once and held, it was steady. Hence
+//    --colorlight-hz and --colorlight-resend (stop resending an unchanged frame after N sends).
 // The card's own settings (module, scan, cabinet 128x192, which of its ports carry which rows)
 // are set once with LEDVision and saved on the card; this only sends pixels.
 #pragma once
@@ -30,7 +33,7 @@
 #include "wall.h"
 
 struct Colorlight {
-  static constexpr int kHz = 60;
+  int hz, resend;  // send rate; stop resending an unchanged frame after this many sends (0: never)
   int fd = -1, w, h;
   std::vector<Point> lut;  // logical -> card pixel
   std::mutex mu;
@@ -40,7 +43,10 @@ struct Colorlight {
   std::thread th;
 
   // As root: the raw socket needs CAP_NET_RAW, the caller drops root after this.
-  Colorlight(const std::string &ifname, const Layout &L, int cols) : lut(card_lut(L, cols)) {
+  Colorlight(const std::string &ifname, int hz, int resend, const Layout &L, int cols)
+      : hz(hz), resend(resend), lut(card_lut(L, cols)) {
+    if (hz < 1 || hz > 240) throw std::runtime_error("--colorlight-hz must be 1..240");
+    if (resend < 0) throw std::runtime_error("--colorlight-resend must be >= 0");
     w = 0, h = 0;
     for (Point p : lut) w = std::max(w, p.x + 1), h = std::max(h, p.y + 1);
     if (w > 497) throw std::runtime_error("colorlight: rows over 497 pixels need split packets");
@@ -64,7 +70,7 @@ struct Colorlight {
     const int buf = 4 << 20;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof buf);
     next.assign(size_t(w) * h * 3, 0), cur = next;
-    fprintf(stderr, "colorlight: %s, card frame %dx%d at %dHz\n", ifname.c_str(), w, h, kHz);
+    fprintf(stderr, "colorlight: %s, card frame %dx%d at %dHz, resend %d\n", ifname.c_str(), w, h, hz, resend);
   }
   ~Colorlight() {
     stop = true;
@@ -78,13 +84,14 @@ struct Colorlight {
     th = std::thread([this] {
       using clock = std::chrono::steady_clock;
       const auto t0 = clock::now();
+      int sends = 0;  // of the current frame
       for (int64_t k = 1; !stop; k++) {
         {
           std::lock_guard<std::mutex> l(mu);
-          if (fresh) std::swap(cur, next), fresh = false;
+          if (fresh) std::swap(cur, next), fresh = false, sends = 0;
         }
-        send_frame();
-        std::this_thread::sleep_until(t0 + std::chrono::microseconds(k * 1000000 / kHz));
+        if (!resend || sends < resend) send_frame(), sends++;
+        std::this_thread::sleep_until(t0 + std::chrono::microseconds(k * 1000000 / hz));
       }
     });
   }
@@ -99,7 +106,7 @@ struct Colorlight {
       uint8_t *d = &next[(size_t(p.y) * w + p.x) * 3];
       d[0] = c[2] * pct / 100, d[1] = c[1] * pct / 100, d[2] = c[0] * pct / 100;
     }
-    fresh = true;
+    if (next != cur) fresh = true;  // a still redrawn is not a new frame (cur only changes under mu)
   }
 
  private:
