@@ -107,10 +107,17 @@ struct Playlist {
   int upcoming() const { return pos + 1 < order.size() ? order[pos + 1] : order[0]; }
   int64_t end() const { return start + item_ms[current()]; }
 
-  // Jumps to the next item at t (the button); false on the last item of the pass.
-  bool skip(int64_t t) {
+  // Jumps to the next item at t; false on the last item of the pass (the button then moves on
+  // to button.cycle), unless wrap and the playlist loops: then the next pass starts.
+  bool skip(int64_t t, bool wrap) {
     seek(t);
-    if (done || pos + 1 >= order.size()) return false;
+    if (done) return false;
+    if (pos + 1 >= order.size()) {
+      if (!wrap || !loop) return false;
+      start = t - item_ms[current()];  // the item ends now: seek starts the next pass
+      seek(t);
+      return true;
+    }
     pos++, start = t;
     return true;
   }
@@ -154,6 +161,6 @@ inline Mode media_mode(const std::string &name, std::vector<Clip> clips, Playlis
            if (pl.done) return t + 1000;
            return std::min(pl.end(), t - local + c.ends_ms[i]);
          }};
-  m.skip = [p](int64_t t) { return p->skip(t); };
+  m.skip = [p](int64_t t, bool wrap) { return p->skip(t, wrap); };
   return m;
 }

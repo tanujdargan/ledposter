@@ -45,6 +45,7 @@ Commands take effect from the next frame (within about 100ms). A `status` sent r
 | `list_modes` | none | `modes`, `events`, `fonts`: see [Modes and settings](#modes-and-settings) |
 | `overlay` | `event`: `kill`, `killstreak`, `death` or `win` | `ms`: how long it shows |
 | `show_text` | `text`: string (max 500 bytes, `""` clears), `seconds`: 0.5 to 86400 (default 5), `color` (optional, default white) | `ms` |
+| `next` | none | `skipped`: bool |
 | `ack_wifi_setup` | none | none |
 | `reload_config` | none | `restart_needed`: list of section names |
 | `set_stream` | `ddp` and/or `e131`: bool | `ddp`, `e131`: whether each receiver is now listening |
@@ -95,6 +96,8 @@ The response echoes `mode`, `mode_name` (pattern name, media id, playlist name, 
 | `win` | 3000 | confetti bursting from the bottom corners, "VICTORY" |
 
 **`show_text`** shows a message in a dark band across the middle of the wall for `seconds`, on top of the mode and any event overlay. It picks the biggest font that fits, word-wraps, and only breaks words that fit no other way. A new `show_text` replaces the current one; `"text": ""` removes it. Meant for the IP at boot and Wi-Fi setup status (milestone 6).
+
+**`next`** jumps the playing playlist to its next item (the web app's Next button). Unlike a short button press it never leaves the playlist: on the last item a looping playlist starts its next pass (reshuffled if it shuffles). `skipped` is false, and nothing changes, when no playlist is playing (or a stream has taken over) or a one-shot playlist is on its last item.
 
 **`ack_wifi_setup`** clears `wifi_setup_requested` in the status (see [Button](#button)). `wifi_setup_count` keeps counting.
 
@@ -185,7 +188,7 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
  "amps": 12.96, "amps_unlimited": 36.0, "limited": true, "ceiling_amps": 13.0,
  "brightness": {"user": 100, "auto": 64.7, "auto_enabled": true, "effective": 65, "output": 36},
  "lux": 50.0, "sensor": "ok",
- "power": true, "w": 128, "h": 192, "uptime_s": 312,
+ "power": true, "output": "colorlight", "w": 128, "h": 192, "uptime_s": 312,
  "mode_settings": {}, "overlays": [], "button": "ok",
  "wifi_setup_requested": false, "wifi_setup_count": 0, "wifi_setup_at": null, "button_double_count": 0,
  "stream": {"active": false, "source": null, "fps": 0, "last_packet_ms_ago": null, "ddp": true, "e131": false}}
@@ -215,6 +218,7 @@ One push button on a GPIO (`button:` in the config, README has the wiring). The 
 | `lux` | latest sensor reading (unsmoothed), or `null` |
 | `sensor` | `ok`, `missing` (not found or read error; the engine retries every 5s), `fake` (simulator with `set_fake_lux`) |
 | `power` | false after `power {"on": false}` |
+| `output` | what drives the panels: `hub75` (the bonnet, rpi-rgb-led-matrix), `colorlight` (`--colorlight IFACE`; the matrix timing options do nothing then) or `sim` (`make sim`; reports `colorlight` when started with `--colorlight`) |
 | `stream.active` | external input is showing (the mode underneath is paused) |
 | `stream.source` | `ddp` or `e131`: where the last complete frame came from, `null` if none yet |
 | `stream.fps` | complete stream frames received per second, over the last second |

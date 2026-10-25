@@ -57,7 +57,8 @@ DEFAULTS = {
     "maintenance": {"enabled": True, "day": 6, "hour": 4},
     "last_mode": {},
     # The time (and date) the engine draws on top of whatever plays; applied by reload_config.
-    "clock_overlay": {"enabled": False, "position": "bottom-center", "hour24": True, "date": True},
+    "clock_overlay": {"enabled": False, "position": "bottom-center", "hour24": True, "date": True,
+                      "time_size": "m", "date_size": "s"},
 }
 
 

@@ -234,11 +234,17 @@ inline const std::vector<std::string> kClockPositions = {
     "top-left", "top-center", "top-right", "middle-left", "center", "middle-right",
     "bottom-left", "bottom-center", "bottom-right"};
 
+// Sizes (clock_overlay.time_size, date_size): one pre-rasterized font each (clockfont.h).
+inline const std::vector<std::string> kClockTimeSizes = {"s", "m", "l", "xl"};
+inline const std::vector<std::string> kClockDateSizes = {"s", "m", "l"};
+
 struct ClockOverlayCfg {
   bool enabled = false, hour24 = true, date = true;
   int pos = 7;  // index in kClockPositions
+  int time_size = 1, date_size = 0;  // index in kClockTimeSizes, kClockDateSizes
   bool operator==(const ClockOverlayCfg &o) const {
-    return enabled == o.enabled && hour24 == o.hour24 && date == o.date && pos == o.pos;
+    return enabled == o.enabled && hour24 == o.hour24 && date == o.date && pos == o.pos &&
+           time_size == o.time_size && date_size == o.date_size;
   }
 };
 
@@ -279,7 +285,7 @@ inline void draw_aa(const AaFont &f, const std::string &text, const InkBox &b, i
 }
 
 struct ClockOverlay {
-  static constexpr int kMargin = 6, kGap = 5, kHalo = 3;  // canvas px
+  static constexpr int kMargin = 6, kHalo = 3;  // canvas px
   ClockOverlayCfg cfg;
   std::string text;  // what the layer shows ("" = nothing yet)
   std::time_t at = -1;
@@ -302,8 +308,10 @@ struct ClockOverlay {
   }
 
   void render(const std::string &time, const std::string &date, int w, int h) {
-    const InkBox tb = ink_box(kClockTime, time), db = ink_box(kClockDate, date);
+    const AaFont &tf = *kClockTimeFonts[cfg.time_size], &df = *kClockDateFonts[cfg.date_size];
+    const InkBox tb = ink_box(tf, time), db = ink_box(df, date);
     const int tw = tb.x1 - tb.x0, th = tb.y1 - tb.y0;
+    const int kGap = std::max(3, th / 5);  // time to date, 5px at the default size
     const int dw = date.empty() ? 0 : db.x1 - db.x0, dh = date.empty() ? 0 : db.y1 - db.y0;
     const int bw = std::max(tw, dw), bh = th + (dh ? kGap + dh : 0);
     const int col = cfg.pos % 3, row = cfg.pos / 3;
@@ -314,8 +322,8 @@ struct ClockOverlay {
     x = bx - kHalo, y = by - kHalo;
     std::vector<uint8_t> mask(size_t(lw) * lh);
     auto line_x = [&](int lwid) { return kHalo + (col == 0 ? 0 : col == 1 ? (bw - lwid) / 2 : bw - lwid); };
-    draw_aa(kClockTime, time, tb, line_x(tw), kHalo, mask, lw);
-    if (dh) draw_aa(kClockDate, date, db, line_x(dw), kHalo + th + kGap, mask, lw);
+    draw_aa(tf, time, tb, line_x(tw), kHalo, mask, lw);
+    if (dh) draw_aa(df, date, db, line_x(dw), kHalo + th + kGap, mask, lw);
     // Halo: the ink grown by a pixel, then blurred (two 3x3 box passes).
     std::vector<uint8_t> halo(mask.size()), tmp(mask.size());
     for (int r = 0; r < lh; r++)

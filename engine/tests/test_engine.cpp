@@ -478,6 +478,27 @@ static void test_clock_overlay() {
   for (int y = 0; y < 192; y++)
     for (int x = 0; x < 128; x++) lit += f.rgb[(size_t(y) * 128 + x) * 3] > 100 && (assert(x > 40 && y > 150), true);
   assert(lit > 50);
+  // Every size fits the wall at every position with the widest times ("00:00", "03:33"; 12h is
+  // never wider), and each time size is taller than the one before.
+  const std::time_t day = 1761350400;  // 2025-10-25 00:00 UTC
+  for (int ds = 0; ds < int(kClockDateSizes.size()); ds++) {
+    int last_h = 0;
+    for (int ts = 0; ts < int(kClockTimeSizes.size()); ts++) {
+      int hh = 0;
+      for (std::time_t at : {day, day + 3 * 3600 + 33 * 60, day + 12 * 3600})
+        for (bool h24 : {true, false})
+          for (int pos = 0; pos < 9; pos++) {
+            ClockOverlay o;
+            ClockOverlayCfg k;
+            k.enabled = true, k.hour24 = h24, k.pos = pos, k.time_size = ts, k.date_size = ds;
+            assert(o.update(k, at, 128, 192));
+            assert(o.x >= 0 && o.y >= 0 && o.x + o.layer.w <= 128 && o.y + o.layer.h <= 192);
+            hh = std::max(hh, o.layer.h);
+          }
+      assert(hh > last_h);
+      last_h = hh;
+    }
+  }
 }
 
 int main(int argc, char **argv) {

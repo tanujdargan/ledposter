@@ -330,11 +330,18 @@ static void test_boot(const FontSet &fonts) {
 
 static void test_playlist_skip() {
   Playlist p({1000, 1000, 1000}, true, false);
-  assert(p.seek(500) == 500 && p.skip(500) && p.current() == 1);
+  assert(p.seek(500) == 500 && p.skip(500, false) && p.current() == 1);
   assert(p.seek(600) == 100 && p.end() == 1500);
-  assert(p.skip(700) && p.current() == 2);
-  assert(!p.skip(800) && p.current() == 2);  // last item: the button moves to the next mode
+  assert(p.skip(700, false) && p.current() == 2);
+  assert(!p.skip(800, false) && p.current() == 2);  // last item: the button moves to the next mode
   assert(p.seek(1700) == 0 && p.current() == 0);  // the item still ends on time and loops
+  // The next command wraps a looping playlist to its next pass, and not a one-shot one.
+  Playlist q({1000, 1000}, true, true, 7);
+  q.skip(100, true);
+  const int last = q.current();
+  assert(q.skip(200, true) && q.current() != last && q.seek(300) == 100);
+  Playlist once({1000, 1000}, false, false);
+  assert(once.skip(100, true) && !once.skip(200, true) && once.current() == 1);
 }
 
 static void test_m5() {

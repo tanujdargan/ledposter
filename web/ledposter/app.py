@@ -290,6 +290,8 @@ class ClockOverlay(BaseModel):
                       "bottom-left", "bottom-center", "bottom-right"] = "bottom-center"
     hour24: bool = True
     date: bool = Field(True, description="The date under the time")
+    time_size: Literal["s", "m", "l", "xl"] = Field("m", description="s, m, l or xl (xl fills the wall's width)")
+    date_size: Literal["s", "m", "l"] = "s"
 
 
 class TokenCreate(BaseModel):
@@ -308,6 +310,10 @@ class TokenCreated(TokenInfo):
 
 class Ok(BaseModel):
     ok: bool = True
+
+
+class Skipped(BaseModel):
+    skipped: bool = Field(description="False if no playlist is playing, or a one-shot one is on its last item")
 
 
 # -- mode picker from the engine's list_modes ----------------------------------------
@@ -895,6 +901,11 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
     async def set_mode(body: ModeRequest, who=Depends(require_auth)):
         await act_mode(body.model_dump())
         return Ok()
+
+    @app.post("/api/next", response_model=Skipped, tags=["control"],
+              summary="Next item of the playing playlist (a looping one wraps to its next pass)")
+    async def next_item(who=Depends(require_auth)):
+        return Skipped(skipped=bool((await engine_call("next")).get("skipped")))
 
     # -- media -----------------------------------------------------------------------
 

@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
-"""Generates engine/src/clockfont.h: the clock overlay's two antialiased fonts as alpha bitmaps.
+"""Generates engine/src/clockfont.h: the clock overlay's antialiased fonts as alpha bitmaps.
 
   python3 tools/clockfont.py Inter-VariableFont_slnt,wght.ttf > engine/src/clockfont.h
 
 Inter (https://rsms.me/inter, SIL Open Font License 1.1), rasterized here once with Pillow so
-the engine needs no font library and does no rasterizing on the Pi: the time in Inter Light,
-the date in Inter Medium, small caps-height text with a little tracking. Needs Pillow; the
+the engine needs no font library and does no rasterizing on the Pi: the time in Inter Light
+(Regular at the smallest size, where Light gets too thin for the LEDs), the date in Inter Medium,
+small caps-height text with a little tracking. One font per size the overlay offers
+(clock_overlay.time_size s/m/l/xl, date_size s/m/l): the widest time, "00:00" or "03:33", fits
+the 128px wall between its 6px margins at xl. Needs Pillow; the
 variable font, so both weights come from one file (a static TTF works too, at its own weight).
 """
 import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-# name, size px, weight, tracking px, characters
+DIGITS, CAPS = "0123456789:", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+# name, size px, weight, tracking px, characters; each group in size order (kClockTimeFonts...)
 FONTS = [
-    ("kClockTime", 32, 300, 1, "0123456789:"),
-    ("kClockDate", 9, 500, 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "),
+    ("kClockTimeS", 24, 400, 1, DIGITS),
+    ("kClockTimeM", 32, 300, 1, DIGITS),
+    ("kClockTimeL", 39, 300, 0, DIGITS),
+    ("kClockTimeXL", 46, 300, -2, DIGITS),
+    ("kClockDateS", 9, 500, 1, CAPS),
+    ("kClockDateM", 12, 500, 1, CAPS),
+    ("kClockDateL", 16, 500, 1, CAPS),
 ]
 
 
@@ -75,6 +84,9 @@ def main():
         w("};\n")
         w(f"inline const AaGlyph {name}Glyphs[] = {{\n" + "\n".join(table) + "\n};\n")
         w(f"inline const AaFont {name}{{{name}Glyphs, {len(gs)}, {name}Alpha}};\n")
+    for group in ("kClockTime", "kClockDate"):
+        names = [f[0] for f in FONTS if f[0].startswith(group)]
+        w(f"\ninline const AaFont *const {group}Fonts[] = {{{', '.join('&' + n for n in names)}}};\n")
 
 
 if __name__ == "__main__":

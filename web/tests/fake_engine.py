@@ -60,7 +60,7 @@ class FakeEngine:
         self.state = {"mode": "pattern", "mode_name": "panel-id", "fps": 15.0, "amps": 1.2, "amps_unlimited": 1.2,
                       "limited": False, "ceiling_amps": 13.0,
                       "brightness": {"user": 100, "auto": None, "auto_enabled": True, "effective": 100, "output": 100},
-                      "lux": None, "sensor": "missing", "power": True, "w": w, "h": h, "uptime_s": 1,
+                      "lux": None, "sensor": "missing", "power": True, "output": "sim", "w": w, "h": h, "uptime_s": 1,
                       "wifi_setup_requested": False, "wifi_setup_count": 0, "wifi_setup_at": None,
                       "button_double_count": 0,
                       "stream": {"active": False, "source": None, "fps": 0, "last_packet_ms_ago": None,
@@ -125,6 +125,8 @@ class FakeEngine:
                 return {"ok": False, "error": "show_text needs text and seconds"}
             self.texts.append((req["text"], req["seconds"]))
             return {"ok": True}
+        if cmd == "next":
+            return {"ok": True, "skipped": self.state["mode"] == "playlist"}
         if cmd == "ack_wifi_setup":
             self.state["wifi_setup_requested"] = False
             return {"ok": True}

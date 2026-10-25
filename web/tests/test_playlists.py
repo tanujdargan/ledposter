@@ -136,9 +136,25 @@ def test_docs_and_openapi(authed):
 
 
 def test_clock_overlay_saves_and_reloads(authed, engine, data):
-    assert authed.get("/api/clock_overlay").json() == {"enabled": False, "position": "bottom-center", "hour24": True, "date": True}
-    body = {"enabled": True, "position": "top-right", "hour24": False, "date": False}
+    assert authed.get("/api/clock_overlay").json() == {"enabled": False, "position": "bottom-center", "hour24": True,
+                                                       "date": True, "time_size": "m", "date_size": "s"}
+    body = {"enabled": True, "position": "top-right", "hour24": False, "date": False, "time_size": "xl", "date_size": "l"}
     assert authed.put("/api/clock_overlay", json=body).json() == body
     assert yaml.safe_load((data / "config.yaml").read_text())["clock_overlay"] == body
     assert engine.calls[-1]["cmd"] == "reload_config"
     assert authed.put("/api/clock_overlay", json={**body, "position": "left"}).status_code == 422
+    assert authed.put("/api/clock_overlay", json={**body, "time_size": "xxl"}).status_code == 422
+    assert authed.put("/api/clock_overlay", json={**body, "date_size": "xl"}).status_code == 422
+    # A config from before the sizes existed reads with the defaults.
+    old = {"enabled": True, "position": "center", "hour24": True, "date": True}
+    assert authed.put("/api/clock_overlay", json=old).json() == {**old, "time_size": "m", "date_size": "s"}
+
+
+def test_next_item(authed, engine):
+    assert authed.post("/api/next").json() == {"skipped": False}
+    authed.post("/api/mode", json={"mode": "effect", "effect": "plasma"})
+    assert engine.calls[-1]["cmd"] == "set_mode"
+    authed.put("/api/playlists/p", json={"items": [], "loop": True, "shuffle": False})
+    engine.state["mode"] = "playlist"
+    assert authed.post("/api/next").json() == {"skipped": True}
+    assert engine.calls[-1]["cmd"] == "next"

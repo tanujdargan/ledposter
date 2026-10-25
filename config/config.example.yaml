@@ -142,5 +142,6 @@ stream: {apply_gamma: true}              # true: input is sRGB, gets display.gam
 
 # The time (and date) drawn on top of whatever plays, in the Pi's time zone (web app: More > Clock).
 # position: top-left, top-center, top-right, middle-left, center, middle-right, bottom-left,
-# bottom-center or bottom-right. Applied live (reload_config).
-clock_overlay: {enabled: false, position: bottom-center, hour24: true, date: true}
+# bottom-center or bottom-right. time_size: s, m, l or xl (xl fills the width); date_size: s, m or l.
+# Applied live (reload_config).
+clock_overlay: {enabled: false, position: bottom-center, hour24: true, date: true, time_size: m, date_size: s}

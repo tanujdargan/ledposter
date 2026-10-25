@@ -125,6 +125,7 @@ struct Display {
     off = matrix->CreateFrameCanvas();
   }
   ~Display() { delete matrix; }  // clears the panels
+  const char *output() const { return card ? "colorlight" : "hub75"; }  // status "output"
 
   // pct: output brightness after the limiter. The library scales each value
   // by it as the pixel is set, so it only affects this frame.
@@ -153,10 +154,13 @@ struct Display {
   std::string dump;
   std::chrono::steady_clock::time_point last{};
 
+  bool card;  // --colorlight given: reports that output, so the web app's card UI can be tried
+
   Display(const YAML::Node &, const Layout &L, const std::string &dump, const std::string &,
-          const std::string &, const CardOpts &)
-      : out(L.width, L.height), dump(dump) {}
+          const std::string &, const CardOpts &c)
+      : out(L.width, L.height), dump(dump), card(!c.ifname.empty()) {}
   ~Display() { write(); }
+  const char *output() const { return card ? "colorlight" : "sim"; }
 
   void show(const Frame &f, int pct) {
     scale_frame(f, pct, out);
@@ -406,6 +410,13 @@ static Settings load_settings(YAML::Node cfg) {
   auto it = std::find(kClockPositions.begin(), kClockPositions.end(), pos);
   check(it != kClockPositions.end(), "clock_overlay.position must be top-left, top-center, ... bottom-right");
   s.clock.pos = int(it - kClockPositions.begin());
+  auto size = [&](const char *key, const std::vector<std::string> &sizes, const char *def, const char *err) {
+    auto i = std::find(sizes.begin(), sizes.end(), co[key].as<std::string>(def));
+    check(i != sizes.end(), err);
+    return int(i - sizes.begin());
+  };
+  s.clock.time_size = size("time_size", kClockTimeSizes, "m", "clock_overlay.time_size must be s, m, l or xl");
+  s.clock.date_size = size("date_size", kClockDateSizes, "s", "clock_overlay.date_size must be s, m or l");
   return s;
 }
 
@@ -657,6 +668,7 @@ int main(int argc, char **argv) {
             {"lux", r(lux, 10)},
             {"sensor", sensor.state()},
             {"power", st.power},
+            {"output", display.output()},
             {"w", layout.width},
             {"h", layout.height},
             {"mode_settings", st.info.settings},
@@ -732,6 +744,13 @@ int main(int argc, char **argv) {
       return [&, o] { return st.ov->set_text(o), json{{"ms", o.ms}}; };
     }
     if (cmd == "ack_wifi_setup") return [&] { return st.wifi_requested = false, ok(); };
+    if (cmd == "next") {  // the playlist's next item, like a short button press but never leaves it
+      return [&] {
+        if (st.streaming || !st.mode.skip || st.mode_t0 < 0 || !st.mode.skip(engine_ms() - st.mode_t0, true))
+          return json{{"skipped", false}};
+        return st.draw.dirty = true, json{{"skipped", true}};
+      };
+    }
     if (cmd == "sim_button") {
 #ifdef LEDPOSTER_SIM
       const json &v = arg(req, "ms");
@@ -866,7 +885,7 @@ int main(int argc, char **argv) {
       }
       job = [&, next, idx, skip_items]() mutable {
         if (st.streaming) end_stream(engine_ms(), true);  // then advance the mode underneath
-        if (skip_items && st.mode.skip && st.mode_t0 >= 0 && st.mode.skip(engine_ms() - st.mode_t0))
+        if (skip_items && st.mode.skip && st.mode_t0 >= 0 && st.mode.skip(engine_ms() - st.mode_t0, false))
           return st.draw.dirty = true, ok();
         if (next) install(std::move(next->first), next->second), cycle_pos = idx;
         return ok();
@@ -929,8 +948,10 @@ int main(int argc, char **argv) {
       if (st.stream_dismissed && (!receiver.any() || quiet)) st.stream_dismissed = false;
       if (!st.streaming && st.mode_t0 < 0) st.draw.dirty = true;  // new or rebuilt mode
       const bool ov = st.ov->active(t);
-      // The clock overlay, unless the mode draws a clock itself. A new minute redraws the frame.
+      // The clock overlay, unless the mode draws a clock itself or is a test pattern (kept
+      // clean to read). A new minute redraws the frame.
       const bool own_clock = !st.streaming && (st.info.kind == "clock" || st.info.kind == "boot" ||
+                                               st.info.kind == "pattern" ||
                                                (st.info.kind == "idle" && st.info.settings.value("clock", false)));
       const bool clock_on = st.s.clock.enabled && !own_clock;
       if (clock_on && st.clock.update(st.s.clock, std::time(nullptr), layout.width, layout.height))
