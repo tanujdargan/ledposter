@@ -80,7 +80,7 @@ function route() {
   const [, name, arg] = hash.split("/");
   const view = views[name] ? name : "home";
   $$(".view").forEach((v) => v.classList.toggle("active", v.dataset.view === view));
-  const tab = { item: "library", schedule: "more", settings: "more" }[view] || view;
+  const tab = { item: "library", schedule: "more", clock: "more", settings: "more" }[view] || view;
   $$(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
   $("#fab").classList.toggle("hidden", view !== "library");
   window.scrollTo(0, 0);
@@ -637,6 +637,24 @@ function drawRing() {
     `<text x="100" y="96">${s.enabled ? `${s.on} – ${s.off}` : "Always on"}</text><text class="lbl" x="100" y="116">${s.quiet.enabled ? `quiet ${s.quiet.start}–${s.quiet.end} · max ${s.quiet.max_brightness}%` : "no quiet hours"}</text>`;
 }
 views.schedule = async () => { views.current = "schedule"; schedule = await api("/api/schedule"); bindSchedule(); };
+
+/* ---- clock overlay ---- */
+const CLOCK_POS = ["top-left", "top-center", "top-right", "middle-left", "center", "middle-right", "bottom-left", "bottom-center", "bottom-right"];
+let clockOv = null;
+const saveClock = debounce(async () => { try { clockOv = await api("/api/clock_overlay", { method: "PUT", body: clockOv }); } catch (e) { toast(e.message, true); } }, 300);
+function bindClock() {
+  const c = clockOv;
+  $("#co-enabled").checked = c.enabled; $("#co-date").checked = c.date;
+  $$("input[name=co-fmt]").forEach((i) => { i.checked = i.value === (c.hour24 ? "24" : "12"); });
+  $("#co-pos").replaceChildren(...CLOCK_POS.map((p) => h("button", { class: `cell${p === c.position ? " active" : ""}`, role: "radio", "aria-checked": p === c.position, "aria-label": p.replace("-", " "),
+    onclick: () => { c.position = p; c.enabled = true; bindClock(); saveClock(); } }, h("span", {}, c.hour24 ? "12:34" : "2:34"))));
+  $("#co-pos").classList.toggle("off", !c.enabled);
+  $("#co-tz").textContent = status ? `Uses the wall's clock (${status.timezone}, now ${status.time}).` : "";
+}
+$("#co-enabled").onchange = (e) => { clockOv.enabled = e.target.checked; bindClock(); saveClock(); };
+$("#co-date").onchange = (e) => { clockOv.date = e.target.checked; saveClock(); };
+$$("input[name=co-fmt]").forEach((i) => { i.onchange = () => { clockOv.hour24 = i.value === "24"; bindClock(); saveClock(); }; });
+views.clock = async () => { views.current = "clock"; clockOv = await api("/api/clock_overlay"); bindClock(); };
 
 /* ---- settings ---- */
 async function loadSettings() { settings = await api("/api/settings"); }

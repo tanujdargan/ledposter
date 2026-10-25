@@ -7,11 +7,13 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "clockfont.h"
 #include "effects.h"
 #include "text.h"
 #include "wall.h"
@@ -219,5 +221,146 @@ struct Overlays {
     if (event) event->o.draw(layer, t - event->start);
     if (text) text->o.draw(layer, t - text->start);
     composite(f, layer, lut);
+  }
+};
+
+// ---- clock overlay ----
+
+// The time, and the date under it, on top of whatever plays (config clock_overlay, applied
+// live by reload_config). Lock-screen style: Inter Light, soft white, a soft dark halo so it
+// reads on bright pictures too. Rendered into a small layer only when the text or the
+// settings change (once a minute); each frame just blends that box.
+inline const std::vector<std::string> kClockPositions = {
+    "top-left", "top-center", "top-right", "middle-left", "center", "middle-right",
+    "bottom-left", "bottom-center", "bottom-right"};
+
+struct ClockOverlayCfg {
+  bool enabled = false, hour24 = true, date = true;
+  int pos = 7;  // index in kClockPositions
+  bool operator==(const ClockOverlayCfg &o) const {
+    return enabled == o.enabled && hour24 == o.hour24 && date == o.date && pos == o.pos;
+  }
+};
+
+// Ink extent of text in font: left and right of the ink from the pen start, top and bottom
+// from the baseline.
+struct InkBox {
+  int x0 = 1 << 20, x1 = -(1 << 20), y0 = 1 << 20, y1 = -(1 << 20);
+};
+inline InkBox ink_box(const AaFont &f, const std::string &text) {
+  InkBox b;
+  int pen = 0;
+  for (char ch : text) {
+    const AaGlyph *g = f.get(uint8_t(ch));
+    if (!g) continue;
+    if (g->w) {
+      b.x0 = std::min(b.x0, pen + g->x), b.x1 = std::max(b.x1, pen + g->x + g->w);
+      b.y0 = std::min(b.y0, g->y), b.y1 = std::max(b.y1, g->y + g->h);
+    }
+    pen += g->adv;
+  }
+  return b;
+}
+
+// Draws text's coverage into mask (w wide), the ink's top-left at (x, y).
+inline void draw_aa(const AaFont &f, const std::string &text, const InkBox &b, int x, int y,
+                    std::vector<uint8_t> &mask, int w) {
+  int pen = x - b.x0;
+  for (char ch : text) {
+    const AaGlyph *g = f.get(uint8_t(ch));
+    if (!g) continue;
+    for (int r = 0; r < g->h; r++)
+      for (int c = 0; c < g->w; c++) {
+        uint8_t &m = mask[size_t(y - b.y0 + g->y + r) * w + pen + g->x + c];
+        m = std::max(m, f.alpha[g->off + r * g->w + c]);
+      }
+    pen += g->adv;
+  }
+}
+
+struct ClockOverlay {
+  static constexpr int kMargin = 6, kGap = 5, kHalo = 3;  // canvas px
+  ClockOverlayCfg cfg;
+  std::string text;  // what the layer shows ("" = nothing yet)
+  std::time_t at = -1;
+  int x = 0, y = 0;  // the layer's top-left on the canvas
+  Layer layer{0, 0};
+
+  // Re-renders if the time text or the settings changed; true if they did (redraw the frame).
+  bool update(const ClockOverlayCfg &c, std::time_t now, int w, int h) {
+    if (now == at && c == cfg) return false;
+    at = now;
+    std::tm tm{};
+    localtime_r(&now, &tm);
+    ClockStyle cs;
+    cs.hour24 = c.hour24;
+    const std::string time = clock_time(tm, cs), date = c.date ? clock_date(tm) : "";
+    if (c == cfg && time + "|" + date == text) return false;
+    cfg = c, text = time + "|" + date;
+    render(time, date, w, h);
+    return true;
+  }
+
+  void render(const std::string &time, const std::string &date, int w, int h) {
+    const InkBox tb = ink_box(kClockTime, time), db = ink_box(kClockDate, date);
+    const int tw = tb.x1 - tb.x0, th = tb.y1 - tb.y0;
+    const int dw = date.empty() ? 0 : db.x1 - db.x0, dh = date.empty() ? 0 : db.y1 - db.y0;
+    const int bw = std::max(tw, dw), bh = th + (dh ? kGap + dh : 0);
+    const int col = cfg.pos % 3, row = cfg.pos / 3;
+    // Block position on the canvas, then the layer around it with room for the halo.
+    const int bx = col == 0 ? kMargin : col == 1 ? (w - bw) / 2 : w - kMargin - bw;
+    const int by = row == 0 ? kMargin : row == 1 ? (h - bh) / 2 : h - kMargin - bh;
+    const int lw = bw + 2 * kHalo, lh = bh + 2 * kHalo;
+    x = bx - kHalo, y = by - kHalo;
+    std::vector<uint8_t> mask(size_t(lw) * lh);
+    auto line_x = [&](int lwid) { return kHalo + (col == 0 ? 0 : col == 1 ? (bw - lwid) / 2 : bw - lwid); };
+    draw_aa(kClockTime, time, tb, line_x(tw), kHalo, mask, lw);
+    if (dh) draw_aa(kClockDate, date, db, line_x(dw), kHalo + th + kGap, mask, lw);
+    // Halo: the ink grown by a pixel, then blurred (two 3x3 box passes).
+    std::vector<uint8_t> halo(mask.size()), tmp(mask.size());
+    for (int r = 0; r < lh; r++)
+      for (int c = 0; c < lw; c++) {
+        uint8_t m = 0;
+        for (int dy = -1; dy <= 1; dy++)
+          for (int dx = -1; dx <= 1; dx++)
+            if (r + dy >= 0 && r + dy < lh && c + dx >= 0 && c + dx < lw)
+              m = std::max(m, mask[size_t(r + dy) * lw + c + dx]);
+        halo[size_t(r) * lw + c] = m;
+      }
+    for (int pass = 0; pass < 2; pass++) {
+      for (int r = 0; r < lh; r++)
+        for (int c = 0; c < lw; c++) {
+          int sum = 0;
+          for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+              if (r + dy >= 0 && r + dy < lh && c + dx >= 0 && c + dx < lw)
+                sum += halo[size_t(r + dy) * lw + c + dx];
+          tmp[size_t(r) * lw + c] = uint8_t(sum / 9);
+        }
+      halo.swap(tmp);
+    }
+    layer = Layer(lw, lh);
+    for (int r = 0; r < lh; r++)
+      for (int c = 0; c < lw; c++) {
+        const size_t i = size_t(r) * lw + c;
+        layer.put(c, r, {0, 0, 0}, 0.75f * halo[i] / 255);
+        layer.put(c, r, {236, 236, 232}, 0.9f * mask[i] / 255);
+      }
+  }
+
+  // Blends the layer onto f (after the mode's gamma, like composite()).
+  void apply(Frame &f, const std::array<uint8_t, 256> &lut) const {
+    for (int r = 0; r < layer.h; r++) {
+      const int fy = y + r;
+      if (fy < 0 || fy >= f.h) continue;
+      for (int c = 0; c < layer.w; c++) {
+        const int fx = x + c;
+        const int a = layer.a[size_t(r) * layer.w + c];
+        if (fx < 0 || fx >= f.w || !a) continue;
+        uint8_t *p = &f.rgb[(size_t(fy) * f.w + fx) * 3];
+        const uint8_t *s = &layer.rgb[(size_t(r) * layer.w + c) * 3];
+        for (int k = 0; k < 3; k++) p[k] = uint8_t((p[k] * (255 - a) + lut[s[k]] * a + 127) / 255);
+      }
+    }
   }
 };

@@ -133,3 +133,12 @@ def test_docs_and_openapi(authed):
         assert p in paths, p
     assert "multipart/form-data" in paths["/api/media"]["post"]["requestBody"]["content"]
     assert "/api/preview" in spec["info"]["description"]
+
+
+def test_clock_overlay_saves_and_reloads(authed, engine, data):
+    assert authed.get("/api/clock_overlay").json() == {"enabled": False, "position": "bottom-center", "hour24": True, "date": True}
+    body = {"enabled": True, "position": "top-right", "hour24": False, "date": False}
+    assert authed.put("/api/clock_overlay", json=body).json() == body
+    assert yaml.safe_load((data / "config.yaml").read_text())["clock_overlay"] == body
+    assert engine.calls[-1]["cmd"] == "reload_config"
+    assert authed.put("/api/clock_overlay", json={**body, "position": "left"}).status_code == 422

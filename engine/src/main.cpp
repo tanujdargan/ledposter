@@ -355,6 +355,7 @@ struct Settings {
   int max_fps;  // redraws per second at most (art and effects); overlays and streams are not capped.
                 // Default 60: at 15 and 30 the panels flickered visibly more (by eye, 2026-10-17)
   StreamConfig stream;
+  ClockOverlayCfg clock;
 };
 
 static Settings load_settings(YAML::Node cfg) {
@@ -398,6 +399,13 @@ static Settings load_settings(YAML::Node cfg) {
         "ddp.port and e131.port must be 1 to 65535");
   check(t.start_universe >= 1 && t.start_universe <= 63999, "e131.start_universe must be 1 to 63999");
   check(t.timeout_s > 0, "stream.timeout_s must be > 0");
+  YAML::Node co = cfg["clock_overlay"];
+  s.clock.enabled = co["enabled"].as<bool>(false), s.clock.hour24 = co["hour24"].as<bool>(true);
+  s.clock.date = co["date"].as<bool>(true);
+  const std::string pos = co["position"].as<std::string>("bottom-center");
+  auto it = std::find(kClockPositions.begin(), kClockPositions.end(), pos);
+  check(it != kClockPositions.end(), "clock_overlay.position must be top-left, top-center, ... bottom-right");
+  s.clock.pos = int(it - kClockPositions.begin());
   return s;
 }
 
@@ -412,6 +420,7 @@ struct State {
   int effective = 0;
   Power out;
   std::optional<Overlays> ov;
+  ClockOverlay clock;
   bool wifi_requested = false;  // very long button press; cleared by ack_wifi_setup
   int wifi_count = 0;
   double wifi_at = NAN;  // unix time of the last request
@@ -920,6 +929,12 @@ int main(int argc, char **argv) {
       if (st.stream_dismissed && (!receiver.any() || quiet)) st.stream_dismissed = false;
       if (!st.streaming && st.mode_t0 < 0) st.draw.dirty = true;  // new or rebuilt mode
       const bool ov = st.ov->active(t);
+      // The clock overlay, unless the mode draws a clock itself. A new minute redraws the frame.
+      const bool own_clock = !st.streaming && (st.info.kind == "clock" || st.info.kind == "boot" ||
+                                               (st.info.kind == "idle" && st.info.settings.value("clock", false)));
+      const bool clock_on = st.s.clock.enabled && !own_clock;
+      if (clock_on && st.clock.update(st.s.clock, std::time(nullptr), layout.width, layout.height))
+        st.draw.dirty = true;
       st.auto_pct = auto_pct(st.s.curve, sensor.smoothed);
       st.effective = effective_pct(st.s.user, st.s.auto_on ? st.auto_pct : NAN);
       const int want = st.power ? st.effective : 0;
@@ -942,6 +957,7 @@ int main(int argc, char **argv) {
             for (auto &v : frame.rgb) v = st.s.lut[v];
         }
         // Overlays go on top of the mode or stream, before brightness and the limiter.
+        if (clock_on) st.clock.apply(frame, st.s.lut);
         if (ov) st.ov->apply(frame, t, st.s.lut);
         st.out = limit_power(frame, layout.size, st.s.amps_full, want, st.s.ceiling);
         display.show(frame, st.out.pct);

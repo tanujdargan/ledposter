@@ -139,3 +139,8 @@ mqtt: {enabled: false, host: '', port: 1883, username: '', password: '', tls: fa
 ddp: {enabled: false}                    # port: 4048
 e131: {enabled: false, start_universe: 1, multicast: false}  # port: 5568; 170 pixels per universe
 stream: {apply_gamma: true}              # true: input is sRGB, gets display.gamma; timeout_s: 5
+
+# The time (and date) drawn on top of whatever plays, in the Pi's time zone (web app: More > Clock).
+# position: top-left, top-center, top-right, middle-left, center, middle-right, bottom-left,
+# bottom-center or bottom-right. Applied live (reload_config).
+clock_overlay: {enabled: false, position: bottom-center, hour24: true, date: true}

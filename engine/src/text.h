@@ -264,6 +264,16 @@ inline std::string clock_time(const std::tm &tm, const ClockStyle &s) {
   return b;
 }
 
+// "TUE 7 OCT"
+inline std::string clock_date(const std::tm &tm) {
+  static const char *days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+  static const char *months[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                 "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+  char d[32];
+  snprintf(d, sizeof d, "%s %d %s", days[tm.tm_wday % 7], tm.tm_mday, months[tm.tm_mon % 12]);
+  return d;
+}
+
 // Time centred, with AM/PM (12h) and the date ("TUE 7 OCT") underneath in a
 // smaller font. Picks the biggest font/scale that fits the canvas width.
 inline void draw_clock(Frame &f, const std::tm &tm, const ClockStyle &s, const FontSet &fonts,
@@ -277,16 +287,9 @@ inline void draw_clock(Frame &f, const std::tm &tm, const ClockStyle &s, const F
                                 {"9x18B", 1}, {"7x13B", 1}, {"6x10", 1}, {"5x8", 1}, {"tom-thumb", 1}},
                                true);
   if (!big.font) return;
-  static const char *days[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-  static const char *months[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-                                 "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
   std::string sub;
   if (!s.hour24) sub = tm.tm_hour < 12 ? "AM" : "PM";
-  if (s.date) {
-    char d[32];
-    snprintf(d, sizeof d, "%s %d %s", days[tm.tm_wday % 7], tm.tm_mday, months[tm.tm_mon % 12]);
-    sub += (sub.empty() ? "" : "  ") + std::string(d);
-  }
+  if (s.date) sub += (sub.empty() ? "" : "  ") + clock_date(tm);
   const int sub_scale = big.scale >= 2 ? 2 : 1;
   TextFit small;
   if (!sub.empty())

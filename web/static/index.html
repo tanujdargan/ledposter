@@ -181,6 +181,7 @@
     <div class="topbar"><h1>More</h1></div>
     <div class="list">
       <a class="row link" href="#/schedule"><div class="grow"><span class="label">Schedule</span><span class="sub">On/off times and quiet hours</span></div><svg class="chev"><use href="#i-chev"/></svg></a>
+      <a class="row link" href="#/clock"><div class="grow"><span class="label">Clock</span><span class="sub">Time and date on top of whatever plays</span></div><svg class="chev"><use href="#i-chev"/></svg></a>
       <a class="row link" href="#/settings"><div class="grow"><span class="label">Settings</span><span class="sub">Password, tokens, matrix, integrations</span></div><svg class="chev"><use href="#i-chev"/></svg></a>
       <a class="row link" href="/docs" target="_blank" rel="noopener"><div class="grow"><span class="label">API docs</span><span class="sub">OpenAPI for scripts and Home Assistant</span></div><svg class="chev"><use href="#i-chev"/></svg></a>
       <button class="row link" id="logout"><div class="grow"><span class="label">Sign out</span></div></button>
@@ -211,6 +212,27 @@
       <label class="slider"><span class="top"><b>Max brightness</b><span class="num" id="q-max-val"></span></span><input type="range" id="q-max" min="0" max="100"></label>
     </div>
     <p class="note" id="sch-tz"></p>
+  </section>
+
+  <!-- Clock overlay: the wall drawn as a 3x3 grid of snap positions -->
+  <section class="view" data-view="clock">
+    <div class="topbar"><a class="btn icon ghost back" href="#/more" aria-label="Back"><svg><use href="#i-back"/></svg></a><h1>Clock</h1></div>
+    <div class="list">
+      <div class="row"><div class="grow"><span class="label">Show time</span><span class="sub">On top of videos, pictures and effects</span></div>
+        <label class="switch"><input type="checkbox" id="co-enabled" aria-label="Show time on the wall"><i></i></label></div>
+      <div class="row"><div class="grow"><span class="label">Show date</span></div>
+        <label class="switch"><input type="checkbox" id="co-date" aria-label="Show date"><i></i></label></div>
+    </div>
+    <div class="card">
+      <h2>Position</h2>
+      <div class="clock-grid" id="co-pos" role="radiogroup" aria-label="Position"></div>
+      <div style="height:12px"></div>
+      <div class="seg" role="radiogroup" aria-label="Time format">
+        <label><input type="radio" name="co-fmt" value="24"><span>24-hour</span></label>
+        <label><input type="radio" name="co-fmt" value="12"><span>12-hour</span></label>
+      </div>
+    </div>
+    <p class="note" id="co-tz"></p>
   </section>
 
   <!-- Settings: Hue grouped list, WHOOP maintenance actions, Quest advanced -->

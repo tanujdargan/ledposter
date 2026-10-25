@@ -284,6 +284,14 @@ class SettingsSaved(Settings):
     stream_error: Optional[str] = Field(None, description="The engine couldn't open a DDP/E1.31 port")
 
 
+class ClockOverlay(BaseModel):
+    enabled: bool = False
+    position: Literal["top-left", "top-center", "top-right", "middle-left", "center", "middle-right",
+                      "bottom-left", "bottom-center", "bottom-right"] = "bottom-center"
+    hour24: bool = True
+    date: bool = Field(True, description="The date under the time")
+
+
 class TokenCreate(BaseModel):
     name: str = Field(min_length=1, max_length=60)
 
@@ -1139,6 +1147,18 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
         await st.system_sync()  # DDP/E1.31 on/off changes the firewall
         restart = bool(needed) or before.matrix != body.matrix
         return SettingsSaved(**body.model_dump(), restart_required=restart, stream_error=stream_error)
+
+    @app.get("/api/clock_overlay", response_model=ClockOverlay, tags=["settings"])
+    def get_clock_overlay(who=Depends(require_auth)):
+        return ClockOverlay(**st.cfg["clock_overlay"])
+
+    @app.put("/api/clock_overlay", response_model=ClockOverlay, tags=["settings"],
+             summary="Time and date on top of whatever plays (the wall's time zone)")
+    async def put_clock_overlay(body: ClockOverlay, who=Depends(require_auth)):
+        st.cfg["clock_overlay"] = body.model_dump()
+        await asave()
+        await reload()
+        return body
 
     # -- network ---------------------------------------------------------------------
 

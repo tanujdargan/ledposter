@@ -458,6 +458,28 @@ static void test_push_changed() {
   assert(push_changed(f, 50, sh, set) == 8);
 }
 
+// The clock overlay renders once per text change, inside the canvas, at its corner.
+static void test_clock_overlay() {
+  setenv("TZ", "UTC", 1), tzset();
+  const std::time_t t = 1761390000;  // 2025-10-25 11:00:00 UTC, a Saturday
+  ClockOverlay c;
+  ClockOverlayCfg cfg;
+  cfg.enabled = true, cfg.pos = 0;  // top-left
+  assert(c.update(cfg, t, 128, 192) && c.text == "11:00|SAT 25 OCT");
+  assert(!c.update(cfg, t, 128, 192) && !c.update(cfg, t + 59, 128, 192));
+  assert(c.update(cfg, t + 60, 128, 192) && c.text == "11:01|SAT 25 OCT");
+  cfg.hour24 = false, cfg.date = false, cfg.pos = 8;  // bottom-right
+  assert(c.update(cfg, t + 60, 128, 192) && c.text == "11:01|");
+  assert(c.x >= 0 && c.y >= 0 && c.x + c.layer.w <= 128 && c.y + c.layer.h <= 192);
+  assert(c.x + c.layer.w > 120 && c.y + c.layer.h > 184);
+  Frame f(128, 192);
+  c.apply(f, gamma_lut(2.2));
+  int lit = 0;
+  for (int y = 0; y < 192; y++)
+    for (int x = 0; x < 128; x++) lit += f.rgb[(size_t(y) * 128 + x) * 3] > 100 && (assert(x > 40 && y > 150), true);
+  assert(lit > 50);
+}
+
 int main(int argc, char **argv) {
   // Spec snake: chain index 0 is top-left and sits at the right end of the strip.
   Layout L(64, kSnake);
@@ -551,6 +573,7 @@ int main(int argc, char **argv) {
   test_privs();
   test_redraw();
   test_push_changed();
+  test_clock_overlay();
 
   if (argc > 1) {
     draw_pattern("panel-id", f, L, 0, 0);
