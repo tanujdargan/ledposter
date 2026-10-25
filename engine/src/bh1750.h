@@ -160,11 +160,17 @@ struct LightSensor {
   void run() {
     bool logged = false;
     double log_lux = NAN;
+    int fails = 0;  // in a row
     auto prev = std::chrono::steady_clock::now();
     do {
       double v;
       std::string why;
       const bool good = read(v, why);
+      // The wall's own sensor (2026-10-25) read cleanly for minutes, then failed one read now and
+      // then (EIO, likely noise from the panels on its wires): keep the last value through a few
+      // misses instead of dropping auto brightness for a minute.
+      if (!good && ok && ++fails < 5) continue;
+      fails = 0;
       const auto now = std::chrono::steady_clock::now();
       const double dt = std::chrono::duration<double>(now - prev).count();
       prev = now;
