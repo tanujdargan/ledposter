@@ -34,7 +34,7 @@
 
 struct Colorlight {
   int hz, resend;  // send rate; stop resending an unchanged frame after this many sends (0: never)
-  int fd = -1, w, h;
+  int fd = -1, w, h, panels_h;  // card frame; panels_h: rows the panels show, the rest is padding
   std::vector<Point> lut;  // logical -> card pixel
   std::mutex mu;
   std::vector<uint8_t> next, cur;  // card frames, BGR; next is handed over under mu
@@ -51,6 +51,7 @@ struct Colorlight {
     if (resend < 0) throw std::runtime_error("--colorlight-resend must be >= 0");
     w = 0, h = 0;
     for (Point p : lut) w = std::max(w, p.x + 1), h = std::max(h, p.y + 1);
+    panels_h = h;
     w = std::max(w, card_w), h = std::max(h, card_h);
     if (w > 497) throw std::runtime_error("colorlight: rows over 497 pixels need split packets");
     const unsigned idx = if_nametoindex(ifname.c_str());
@@ -148,8 +149,12 @@ struct Colorlight {
     // 240fps: the picture jumped back 2 frames every few). LEDVision paces its stream too.
     const auto t0 = std::chrono::steady_clock::now();
     const auto span = std::chrono::microseconds(600000 / hz);
-    for (int y = 0; y < h; y++) {
-      if (y && y % 8 == 0) std::this_thread::sleep_until(t0 + span * y / h);
+    // Padding rows first: rows sent just after the last frame's "show frame" landed in the wrong
+    // buffer (the first port, J5, jittered back a frame; J6/J7 were smooth), so that window gets
+    // rows no panel shows.
+    for (int i = 0; i < h; i++) {
+      const int y = (i + panels_h) % h;
+      if (i && i % 8 == 0) std::this_thread::sleep_until(t0 + span * i / h);
       const uint8_t hdr[8] = {uint8_t(y >> 8), uint8_t(y), 0, 0, uint8_t(w >> 8), uint8_t(w), 0x08, 0x88};
       memcpy(row.data(), hdr, 8);
       memcpy(&row[8], &cur[size_t(y) * w * 3], size_t(w) * 3);
