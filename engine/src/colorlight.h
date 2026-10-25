@@ -43,12 +43,15 @@ struct Colorlight {
   std::thread th;
 
   // As root: the raw socket needs CAP_NET_RAW, the caller drops root after this.
-  Colorlight(const std::string &ifname, int hz, int resend, const Layout &L, int cols)
+  // card_w/card_h: the cabinet size set in LEDVision. The whole of it is sent, black past the
+  // panels: left unsent, its leftovers showed as one glitchy column on a 256x256 cabinet.
+  Colorlight(const std::string &ifname, int hz, int resend, const Layout &L, int cols, int card_w, int card_h)
       : hz(hz), resend(resend), lut(card_lut(L, cols)) {
     if (hz < 1 || hz > 240) throw std::runtime_error("--colorlight-hz must be 1..240");
     if (resend < 0) throw std::runtime_error("--colorlight-resend must be >= 0");
     w = 0, h = 0;
     for (Point p : lut) w = std::max(w, p.x + 1), h = std::max(h, p.y + 1);
+    w = std::max(w, card_w), h = std::max(h, card_h);
     if (w > 497) throw std::runtime_error("colorlight: rows over 497 pixels need split packets");
     const unsigned idx = if_nametoindex(ifname.c_str());
     if (!idx) throw std::runtime_error("--colorlight " + ifname + ": no such interface");
