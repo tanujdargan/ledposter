@@ -81,7 +81,8 @@ struct Display {
       : L(L) {
     if (!colorlight.ifname.empty()) {
       card = std::make_unique<Colorlight>(colorlight.ifname, colorlight.hz, colorlight.resend, colorlight.syncs, L, m["card_columns"].as<int>(2),
-                                           m["card_width"].as<int>(0), m["card_height"].as<int>(0));
+                                           m["card_width"].as<int>(0), m["card_height"].as<int>(0),
+                                           m["card_x_offset"].as<int>(0));
       drop_root(user, group);
       card->start();
       return;

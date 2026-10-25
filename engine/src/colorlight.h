@@ -45,9 +45,14 @@ struct Colorlight {
   // As root: the raw socket needs CAP_NET_RAW, the caller drops root after this.
   // card_w/card_h: the cabinet size set in LEDVision. The whole of it is sent, black past the
   // panels: left unsent, its leftovers showed as one glitchy column on a 256x256 cabinet.
+  // x_offset: added to every card column. After a reflash on 2026-10-25 the card showed column x+1
+  // at x (each panel's last column showed its neighbour's or black); 1 put it back.
   Colorlight(const std::string &ifname, int hz, int resend, int syncs, const Layout &L, int cols, int card_w,
-             int card_h)
+             int card_h, int x_offset = 0)
       : hz(hz), resend(resend), syncs(syncs), lut(card_lut(L, cols)) {
+    if (x_offset < 0 || x_offset > 64) throw std::runtime_error("matrix.card_x_offset must be 0..64");
+    for (Point &p : lut)
+      if (p.x >= 0) p.x = int16_t(p.x + x_offset);
     if (syncs < 1 || syncs > 2) throw std::runtime_error("--colorlight-syncs must be 1 or 2");
     if (hz < 1 || hz > 240) throw std::runtime_error("--colorlight-hz must be 1..240");
     if (resend < 0) throw std::runtime_error("--colorlight-resend must be >= 0");

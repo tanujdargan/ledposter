@@ -18,6 +18,9 @@ matrix:
   # The card's cabinet size as set in LEDVision; the whole of it is sent (0: just the panels).
   card_width: 0
   card_height: 0
+  # Shift everything sent to the card right by this many columns (if each panel's last column
+  # shows its neighbour's pixels or black, the card is one off: 1).
+  card_x_offset: 0
   # Chain order: the first entry is the panel plugged into the bonnet.
   # col/row place it on the portrait grid (0,0 = top-left).
   # rotate: how far that panel is physically turned clockwise (0/90/180/270).
