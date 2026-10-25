@@ -27,6 +27,7 @@
   <symbol id="i-plus" viewBox="0 0 24 24"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></symbol>
   <symbol id="i-drag" viewBox="0 0 24 24"><path fill="currentColor" d="M4 8h16v2H4zm0 6h16v2H4z"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path fill="currentColor" d="m6.4 5 5.6 5.6L17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path fill="currentColor" d="M6 5.5v13L15.5 12zM16 5.5h2.5v13H16z"/></symbol>
   <symbol id="i-dots" viewBox="0 0 24 24"><path fill="currentColor" d="M12 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm0 6a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm0 6a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></symbol>
 </svg>
 
@@ -53,6 +54,18 @@
         </div>
       </div>
     </div>
+    <!-- Now showing + one-tap switching: Spotify mini-player row, Hue scene chips -->
+    <div class="card now">
+      <div class="now-head">
+        <div class="grow"><span class="sub" id="mode-kind">Now showing</span><span class="label" id="mode-name">–</span></div>
+        <button class="btn sm hidden" id="next-item" aria-label="Next playlist item"><svg width="16" height="16"><use href="#i-next"/></svg>Next</button>
+        <a class="btn sm ghost" href="#/modes">All modes</a>
+      </div>
+      <div class="mini-title" id="quick-pl-title">Playlists</div>
+      <div class="chips scroll" id="quick-pl" role="group" aria-label="Play a playlist"></div>
+      <div class="mini-title">Modes</div>
+      <div class="chips scroll" id="quick-modes" role="group" aria-label="Switch mode"></div>
+    </div>
     <div class="card">
       <label class="slider"><span class="top"><b>Brightness</b><span class="num" id="bri-val">–</span></span>
         <input type="range" id="brightness" min="0" max="100" step="1" aria-label="Brightness"></label>
@@ -62,11 +75,20 @@
         <label class="switch"><input type="checkbox" id="auto" aria-label="Auto-brightness"><i></i></label>
       </div>
     </div>
-    <a class="list row link" href="#/modes" id="mode-card">
-      <div class="art" style="width:36px;height:54px;border-radius:6px;background:var(--card2)"></div>
-      <div class="grow"><span class="sub">Now showing</span><span class="label" id="mode-name">–</span></div>
-      <svg class="chev"><use href="#i-chev"/></svg>
-    </a>
+    <!-- Clock overlay, the whole control set (More > Clock has the same with more room) -->
+    <div class="card" id="home-clock">
+      <div class="row" style="padding:0"><div class="grow"><span class="label">Clock on the wall</span><span class="sub" id="hc-sub">Time and date on top of whatever plays</span></div>
+        <label class="switch"><input type="checkbox" id="hc-enabled" aria-label="Show the time on the wall"><i></i></label></div>
+      <div class="hc-body">
+        <div class="clock-grid mini" id="hc-pos" role="radiogroup" aria-label="Position"></div>
+        <div class="hc-controls">
+          <div class="mini-title">Time size</div><div id="hc-time"></div>
+          <div class="mini-title">Date</div><div id="hc-date"></div>
+          <div id="hc-fmt" style="margin-top:10px"></div>
+        </div>
+      </div>
+    </div>
+    <a class="statusline" href="#/schedule" id="home-status" aria-label="Schedule and status"></a>
   </section>
 
   <!-- Modes: Hue effects grid, Mercedes/Fi/Riveo settings sheet -->
@@ -227,10 +249,14 @@
       <h2>Position</h2>
       <div class="clock-grid" id="co-pos" role="radiogroup" aria-label="Position"></div>
       <div style="height:12px"></div>
-      <div class="seg" role="radiogroup" aria-label="Time format">
-        <label><input type="radio" name="co-fmt" value="24"><span>24-hour</span></label>
-        <label><input type="radio" name="co-fmt" value="12"><span>12-hour</span></label>
-      </div>
+      <div id="co-fmt"></div>
+    </div>
+    <div class="card">
+      <h2>Time size</h2>
+      <div id="co-time"></div>
+      <h2 style="margin-top:16px">Date size</h2>
+      <div id="co-dsize"></div>
+      <p class="help" style="margin:8px 4px 0">XL fills the wall's width.</p>
     </div>
     <p class="note" id="co-tz"></p>
   </section>
@@ -285,25 +311,26 @@
       <div id="arr-grid" style="display:grid;gap:8px;margin:12px 0"></div>
       <button class="btn primary block" id="arr-apply">Apply arrangement</button>
     </div>
-    <div class="card">
+    <p class="help colorlight-only">The Colorlight card refreshes the panels itself, so refresh rate and PWM timing are set on the card (LEDVision), not here.</p>
+    <div class="card hub75-only">
       <label class="slider"><span class="top"><b>Refresh rate</b><span class="num" id="hz-val">–</span></span>
         <input type="range" id="refresh" min="60" max="260" step="10" aria-label="Refresh rate cap"></label>
       <p class="help">Higher looks smoother on moving pictures. Past what the wall can hold, the rate wobbles, which flickers too: this wall holds 130 Hz with dithering 2. The far right is no cap. Applies on release with a 3-second engine restart.</p>
     </div>
     <div class="card">
-      <details id="matrix-details"><summary style="cursor:pointer;min-height:44px;display:flex;align-items:center">Advanced: wiring and timing</summary>
+      <details id="matrix-details"><summary style="cursor:pointer;min-height:44px;display:flex;align-items:center">Advanced: wiring<span class="hub75-only">&nbsp;and timing</span></summary>
         <div style="margin-top:12px">
-          <label class="field"><span>Hardware mapping</span><select class="input" id="m-mapping"><option value="adafruit-hat-pwm">adafruit-hat-pwm (GPIO4-18 mod)</option><option value="adafruit-hat">adafruit-hat</option></select></label>
+          <label class="field hub75-only"><span>Hardware mapping</span><select class="input" id="m-mapping"><option value="adafruit-hat-pwm">adafruit-hat-pwm (GPIO4-18 mod)</option><option value="adafruit-hat">adafruit-hat</option></select></label>
           <div class="inline">
             <label class="field"><span>Panel size</span><input class="input" type="number" id="m-size" min="4" max="64"></label>
-            <label class="field"><span>GPIO slowdown</span><input class="input" type="number" id="m-slow" min="0" max="10"></label>
-            <label class="field"><span>PWM bits</span><input class="input" type="number" id="m-pwm" min="1" max="11"></label>
+            <label class="field hub75-only"><span>GPIO slowdown</span><input class="input" type="number" id="m-slow" min="0" max="10"></label>
+            <label class="field hub75-only"><span>PWM bits</span><input class="input" type="number" id="m-pwm" min="1" max="11"></label>
           </div>
-          <div class="inline">
+          <div class="inline hub75-only">
             <label class="field"><span>Dithering</span><select class="input" id="m-dither"><option value="0">0 (off)</option><option value="1">1</option><option value="2">2</option></select></label>
             <label class="field"><span>Shortest pulse (ns)</span><input class="input" type="number" id="m-lsb" min="50" max="3000" step="10"></label>
           </div>
-          <p class="help">Raise slowdown if you see flicker or garbage; lower PWM bits for a higher refresh rate.</p>
+          <p class="help hub75-only">Raise slowdown if you see flicker or garbage; lower PWM bits for a higher refresh rate.</p>
           <div class="field"><span>Chain mapping (first panel is on the bonnet; col/row on the grid, rotate clockwise)</span><div id="m-panels"></div>
             <div class="chips" style="margin-top:8px"><button class="chip" id="m-panel-add">+ Panel</button><button class="chip" id="m-panel-del">− Panel</button></div></div>
           <div class="inline">

@@ -171,7 +171,9 @@ function applyStatus(s) {
   if (s.quiet_cap !== null && s.quiet_cap !== undefined) { note.textContent = `Quiet hours: capped at ${s.quiet_cap}% until they end.`; note.classList.remove("hidden"); }
   else if (auto && !noSensor) { note.textContent = "Set by the light sensor while auto-brightness is on."; note.classList.remove("hidden"); }
   else note.classList.add("hidden");
-  $("#mode-name").textContent = s.online ? modeLabel(e) : "Engine offline";
+  const pl = s.online && e.mode === "playlist";  // the name alone fits next to Next
+  $("#mode-kind").textContent = pl ? "Now showing · playlist" : "Now showing";
+  $("#mode-name").textContent = s.online ? (pl ? e.mode_name : modeLabel(e)) : "Engine offline";
   $("#more-version").textContent = `LED Poster ${s.version}`;
   $("#set-version").textContent = s.version;
   const mq = s.mqtt || "disabled";
@@ -179,8 +181,10 @@ function applyStatus(s) {
   $("#mq-status").style.color = mq.startsWith("error") ? "var(--danger)" : "";
   const sm = e.stream;
   $("#stream-status").textContent = !sm ? "" : sm.active ? `Receiving ${sm.source === "e131" ? "E1.31" : "DDP"} at ${Math.round(sm.fps)} fps` : (sm.ddp || sm.e131) ? "Listening, nothing received recently" : "";
+  $('[data-view="settings"]').classList.toggle("colorlight", e.output === "colorlight");
   if (views.current === "modes") renderModes();
   if (views.current === "playlist") renderPlaylistChips();
+  if (views.current === "home") renderHome();
 }
 function setSlider(input, v, label, text) { input.value = v; input.style.setProperty("--p", `${(v - input.min) / (input.max - input.min) * 100}%`); if (label) label.textContent = text; }
 async function pollStatus() {
@@ -193,7 +197,47 @@ $("#brightness").addEventListener("change", () => { setTimeout(() => { briDraggi
 $("#power").addEventListener("change", (e) => api("/api/power", { method: "POST", body: { on: e.target.checked } }).catch((err) => { toast(err.message, true); e.target.checked = !e.target.checked; }));
 $("#auto").addEventListener("change", (e) => api("/api/auto_brightness", { method: "POST", body: { enabled: e.target.checked } }).then(async () => applyStatus(await api("/api/status"))).catch((err) => { toast(err.message, true); e.target.checked = !e.target.checked; }));
 $$("input[name=pstyle]").forEach((r) => { r.checked = (localStorage.getItem("previewStyle") || "dots") === r.value; r.onchange = () => renderer.setStyle(r.value); });
-views.home = () => { views.current = "home"; };
+/* Home: what plays (Next for playlists), one-tap playlists and modes, the clock overlay, a status line. */
+function renderHome() {
+  const e = (status && status.engine) || {};
+  const playing = (n) => e.mode === "playlist" && e.mode_name === n;
+  $("#next-item").classList.toggle("hidden", !(status && status.online && e.mode === "playlist"));
+  const names = Object.keys(playlists).sort();
+  $("#quick-pl").replaceChildren(...names.map((n) => h("button", { class: `chip${playing(n) ? " active" : ""}`, "aria-pressed": playing(n),
+    onclick: () => playPlaylist(n) }, n)));
+  $("#quick-pl").classList.toggle("hidden", !names.length); $("#quick-pl-title").classList.toggle("hidden", !names.length);
+  $("#quick-modes").replaceChildren(...modes.filter((m) => !["media", "playlist", "pattern"].includes(m.apply.mode)).map((m) =>
+    h("button", { class: `chip${isActive(m) ? " active" : ""}`, "aria-pressed": isActive(m), onclick: () => applyMode(m) }, m.name)));
+  renderStatusLine();
+}
+function renderStatusLine() {
+  if (!status) return;
+  const e = status.engine || {}, s = schedule, items = [];
+  const item = (label, value, cls = "") => h("span", { class: cls }, `${label} `, h("b", {}, value));
+  if (s) items.push(item("Schedule", s.enabled ? `${s.on}–${s.off}` : "off"));
+  if (status.quiet_cap !== null && status.quiet_cap !== undefined) items.push(item("Quiet hours", `now, max ${status.quiet_cap}%`, "warn"));
+  else if (s && s.quiet.enabled) items.push(item("Quiet", `${s.quiet.start}–${s.quiet.end}`));
+  if (status.online) {
+    items.push(e.sensor === "missing" ? h("span", {}, "No light sensor") : item("Light", `${e.lux ?? "?"} lux`));
+    items.push(item("Current", `${Number(e.amps || 0).toFixed(1)} of ${e.ceiling_amps} A`, e.limited ? "warn" : ""));
+    if (e.limited) items.push(h("span", { class: "warn" }, "limiter on"));
+  }
+  $("#home-status").replaceChildren(...items);
+}
+async function playPlaylist(n) {
+  try { await api("/api/mode", { method: "POST", body: { mode: "playlist", playlist: n } }); toast(`Playing ${n}`); applyStatus(await api("/api/status")); } catch (e) { toast(e.message, true); }
+}
+$("#next-item").onclick = async () => {
+  try { const r = await api("/api/next", { method: "POST" }); if (!r.skipped) toast("No next item"); } catch (e) { toast(e.message, true); }
+};
+views.home = async () => {
+  views.current = "home";
+  renderHome();
+  const [p, s] = await Promise.all([api("/api/playlists").catch(() => null), api("/api/schedule").catch(() => null), loadClock().catch(() => {})]);
+  if (p) playlists = p;
+  if (s) schedule = s;
+  renderHome();
+};
 
 /* ---- modes ---- */
 const modeValues = JSON.parse(localStorage.getItem("modeValues") || "{}");
@@ -638,23 +682,48 @@ function drawRing() {
 }
 views.schedule = async () => { views.current = "schedule"; schedule = await api("/api/schedule"); bindSchedule(); };
 
-/* ---- clock overlay ---- */
+/* ---- clock overlay (More > Clock and Home share the state and the controls) ---- */
 const CLOCK_POS = ["top-left", "top-center", "top-right", "middle-left", "center", "middle-right", "bottom-left", "bottom-center", "bottom-right"];
+const TIME_SIZES = [["s", "S"], ["m", "M"], ["l", "L"], ["xl", "XL"]], DATE_SIZES = [["s", "S"], ["m", "M"], ["l", "L"]];
 let clockOv = null;
 const saveClock = debounce(async () => { try { clockOv = await api("/api/clock_overlay", { method: "PUT", body: clockOv }); } catch (e) { toast(e.message, true); } }, 300);
+function segRadios(name, opts, cur, onpick, label) {
+  return h("div", { class: "seg", role: "radiogroup", "aria-label": label }, opts.map(([v, l]) => {
+    const i = h("input", { type: "radio", name, value: v, onchange: () => onpick(v) }); i.checked = cur === v;
+    return h("label", {}, i, h("span", {}, l));
+  }));
+}
+function clockChange(patch) { Object.assign(clockOv, patch); bindClock(); saveClock(); }
+function posGrid(el, c) {
+  el.replaceChildren(...CLOCK_POS.map((p) => h("button", { class: `cell${p === c.position ? " active" : ""}`, role: "radio", "aria-checked": p === c.position, "aria-label": p.replace("-", " "),
+    onclick: () => clockChange({ position: p, enabled: true }) }, h("span", {}, c.hour24 ? "12:34" : "2:34"))));
+  el.classList.toggle("off", !c.enabled);
+}
 function bindClock() {
   const c = clockOv;
+  if (!c) return;
+  const fmt = (name) => segRadios(name, [["24", "24-hour"], ["12", "12-hour"]], c.hour24 ? "24" : "12", (v) => clockChange({ hour24: v === "24" }), "Time format");
+  // More > Clock
   $("#co-enabled").checked = c.enabled; $("#co-date").checked = c.date;
-  $$("input[name=co-fmt]").forEach((i) => { i.checked = i.value === (c.hour24 ? "24" : "12"); });
-  $("#co-pos").replaceChildren(...CLOCK_POS.map((p) => h("button", { class: `cell${p === c.position ? " active" : ""}`, role: "radio", "aria-checked": p === c.position, "aria-label": p.replace("-", " "),
-    onclick: () => { c.position = p; c.enabled = true; bindClock(); saveClock(); } }, h("span", {}, c.hour24 ? "12:34" : "2:34"))));
-  $("#co-pos").classList.toggle("off", !c.enabled);
+  posGrid($("#co-pos"), c);
+  $("#co-fmt").replaceChildren(fmt("co-fmt"));
+  $("#co-time").replaceChildren(segRadios("co-time", TIME_SIZES, c.time_size, (v) => clockChange({ time_size: v }), "Time size"));
+  $("#co-dsize").replaceChildren(segRadios("co-dsize", DATE_SIZES, c.date_size, (v) => clockChange({ date_size: v, date: true }), "Date size"));
   $("#co-tz").textContent = status ? `Uses the wall's clock (${status.timezone}, now ${status.time}).` : "";
+  // Home: the date's Off folds into its size picker
+  $("#hc-enabled").checked = c.enabled;
+  $("#hc-sub").textContent = c.enabled ? `${c.position.replace("-", " ")} · ${c.hour24 ? "24-hour" : "12-hour"}${c.date ? " · with date" : ""}` : "Off · pick a spot to show it";
+  posGrid($("#hc-pos"), c);
+  $("#hc-time").replaceChildren(segRadios("hc-time", TIME_SIZES, c.time_size, (v) => clockChange({ time_size: v }), "Time size"));
+  $("#hc-date").replaceChildren(segRadios("hc-date", [["off", "Off"], ...DATE_SIZES], c.date ? c.date_size : "off",
+    (v) => clockChange(v === "off" ? { date: false } : { date: true, date_size: v }), "Date"));
+  $("#hc-fmt").replaceChildren(fmt("hc-fmt"));
 }
-$("#co-enabled").onchange = (e) => { clockOv.enabled = e.target.checked; bindClock(); saveClock(); };
-$("#co-date").onchange = (e) => { clockOv.date = e.target.checked; saveClock(); };
-$$("input[name=co-fmt]").forEach((i) => { i.onchange = () => { clockOv.hour24 = i.value === "24"; bindClock(); saveClock(); }; });
-views.clock = async () => { views.current = "clock"; clockOv = await api("/api/clock_overlay"); bindClock(); };
+$("#co-enabled").onchange = (e) => clockChange({ enabled: e.target.checked });
+$("#hc-enabled").onchange = (e) => clockChange({ enabled: e.target.checked });
+$("#co-date").onchange = (e) => clockChange({ date: e.target.checked });
+async function loadClock() { clockOv = await api("/api/clock_overlay"); bindClock(); }
+views.clock = async () => { views.current = "clock"; await loadClock(); };
 
 /* ---- settings ---- */
 async function loadSettings() { settings = await api("/api/settings"); }
@@ -971,7 +1040,12 @@ views.settings = async (arg) => {
 (async () => {
   renderer = new DotRenderer($("#preview"), 128, 192, 2.2);
   placePreview();
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+  if ("serviceWorker" in navigator) {
+    // A new worker took over this page (an update): reload once so the page and worker match.
+    let had = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (had) { had = false; location.reload(); } });
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
   try { applyStatus(await api("/api/status")); } catch { return; }
   renderer.setSize(status.canvas.w, status.canvas.h);
   modes = await api("/api/modes").catch(() => []);

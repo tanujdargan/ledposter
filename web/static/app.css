@@ -24,7 +24,7 @@ a { color: var(--accent); text-decoration: none; }
 
 /* ---- shell ---- */
 .app { display: grid; grid-template-rows: 1fr auto; min-height: 100%; }
-main { padding: var(--pad); padding-bottom: calc(var(--tabs-h) + var(--sat) + var(--pad)); max-width: 720px; width: 100%; margin: 0 auto; }
+main { padding: var(--pad); padding-bottom: calc(var(--tabs-h) + var(--sat) + var(--pad)); max-width: 720px; width: 100%; min-width: 0; margin: 0 auto; }
 .view { display: none; } .view.active { display: block; animation: fade .18s ease-out; }
 @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .tabs { position: fixed; left: 0; right: 0; bottom: 0; height: calc(var(--tabs-h) + var(--sat)); padding-bottom: var(--sat);
@@ -289,3 +289,28 @@ details.card ol { padding-left: 20px; margin: 8px 0; font-size: 14px; color: var
 .clock-grid .cell:hover { background: rgba(255,255,255,.05); }
 .clock-grid .cell.active { background: rgba(255,176,32,.14); color: var(--text); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .clock-grid.off .cell.active { color: var(--muted); box-shadow: inset 0 0 0 1.5px var(--line); background: transparent; }
+.clock-grid.mini { width: 92px; padding: 3px; gap: 3px; border-radius: 10px; margin: 0; flex: none; }
+.clock-grid.mini .cell { border-radius: 6px; font-size: 8px; }
+
+/* ---- home: now showing, quick switch, clock, status line ---- */
+#preview-slot .preview-wrap { width: 50%; }
+.now-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.now-head .grow { flex: 1; min-width: 0; }
+.now-head .sub { display: block; font-size: 13px; color: var(--muted); }
+.now-head .label { display: block; font-size: 18px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.now-head .btn { flex: none; }
+.mini-title { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; margin: 12px 0 6px; }
+.now .chips.scroll { margin-bottom: 0; }
+.hc-body { display: flex; gap: var(--gap); align-items: flex-start; margin-top: 12px; }
+.hc-controls { flex: 1; min-width: 0; }
+.hc-controls .mini-title:first-child { margin-top: 0; }
+.hc-controls .seg span { min-height: 34px; padding: 0 4px; }
+.statusline { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 4px 4px 0; font-size: 13px; color: var(--muted); }
+.statusline span { white-space: nowrap; }
+.statusline b { color: var(--text); font-weight: 600; }
+.statusline .warn { color: var(--accent); }
+
+/* ---- settings: HUB75 matrix options do nothing on the Colorlight card ---- */
+.colorlight-only { display: none; }
+[data-view="settings"].colorlight .colorlight-only { display: block; }
+[data-view="settings"].colorlight .hub75-only { display: none !important; }
