@@ -52,6 +52,7 @@ struct Colorlight {
     if (w > 497) throw std::runtime_error("colorlight: rows over 497 pixels need split packets");
     const unsigned idx = if_nametoindex(ifname.c_str());
     if (!idx) throw std::runtime_error("--colorlight " + ifname + ": no such interface");
+    carrier_path = "/sys/class/net/" + ifname + "/carrier";
     fd = socket(AF_PACKET, SOCK_RAW, 0);
     if (fd < 0) throw std::runtime_error(std::string("colorlight socket: ") + strerror(errno));
     sockaddr_ll a{};
@@ -90,7 +91,11 @@ struct Colorlight {
           std::lock_guard<std::mutex> l(mu);
           if (fresh) std::swap(cur, next), fresh = false, sends = 0;
         }
-        if (!resend || sends < resend) send_frame(), sends++;
+        // A held frame the card missed (link not up yet after a replug, card power-cycled) would
+        // never come: while there is no carrier, count nothing as sent.
+        const bool up = carrier();
+        if (!up) sends = 0;
+        if (up && (!resend || sends < resend)) send_frame(), sends++;
         std::this_thread::sleep_until(t0 + std::chrono::microseconds(k * 1000000 / hz));
       }
     });
@@ -112,6 +117,15 @@ struct Colorlight {
  private:
   std::vector<uint8_t> pkt;
   int send_errors = 0;
+
+  std::string carrier_path;
+  bool carrier() const {
+    FILE *f = fopen(carrier_path.c_str(), "r");
+    if (!f) return false;
+    const int c = fgetc(f);
+    fclose(f);
+    return c == '1';
+  }
 
   void put(uint8_t type, const uint8_t *data, size_t n, size_t size) {
     static const uint8_t mac[12] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x22, 0x22, 0x33, 0x44, 0x55, 0x66};
