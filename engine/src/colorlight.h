@@ -157,11 +157,14 @@ struct Colorlight {
     // 240fps: the picture jumped back 2 frames every few). LEDVision paces its stream too.
     const auto t0 = std::chrono::steady_clock::now();
     const auto span = std::chrono::microseconds(600000 / hz);
-    // Padding rows first: rows sent just after the last frame's "show frame" landed in the wrong
-    // buffer (the first port, J5, jittered back a frame; J6/J7 were smooth), so that window gets
-    // rows no panel shows.
+    // Padding rows around the panels' rows: rows sent just after the last frame's "show frame"
+    // landed in the wrong buffer (the first port, J5, jittered back a frame), and the last rows
+    // before this frame's one were not all in when it swapped (2026-10-25: J7's panel-boundary
+    // columns showed stale pixels in motion, and the fault followed the port when the ribbons
+    // were swapped). So half the padding goes first and half last.
+    const int pre = (h - panels_h) / 2;
     for (int i = 0; i < h; i++) {
-      const int y = (i + panels_h) % h;
+      const int y = i < pre ? panels_h + i : i < pre + panels_h ? i - pre : i;
       if (i && i % 8 == 0) std::this_thread::sleep_until(t0 + span * i / h);
       const uint8_t hdr[8] = {uint8_t(y >> 8), uint8_t(y), 0, 0, uint8_t(w >> 8), uint8_t(w), 0x08, 0x88};
       memcpy(row.data(), hdr, 8);
