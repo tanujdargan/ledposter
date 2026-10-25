@@ -78,7 +78,8 @@ fi
 if [ ! -f "$tarball" ] || [ ! -f "$tarball.sha256" ]; then die "no tarball for $VERSION in $OUT"; fi
 
 echo "==> copying $VERSION to $TARGET:$REMOTE_DIR/"
-ssh "$TARGET" "mkdir -p $REMOTE_DIR/src"
+# Earlier releases' tarballs are installed already; on the Pi's small overlay root they filled it.
+ssh "$TARGET" "mkdir -p $REMOTE_DIR/src && find $REMOTE_DIR -maxdepth 1 -name 'ledposter-*.tar.zst*' ! -name '$(basename "$tarball")*' -delete"
 if ssh "$TARGET" "command -v rsync > /dev/null"; then
   rsync -a --delete "$work/src/" "$TARGET:$REMOTE_DIR/src/"
   rsync -a "$tarball" "$tarball.sha256" "$TARGET:$REMOTE_DIR/"
