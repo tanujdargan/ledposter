@@ -590,6 +590,16 @@ int main(int argc, char **argv) {
       if (!pattern.empty()) return usage();  // unknown pattern
       throw;
     }
+    // No flag: go straight to the last mode the web app set (config last_mode) instead of
+    // holding the boot screen until the web app is up, ~40 s later on a Pi. The boot screen
+    // stays when there is none or it fails (a deleted media item); the web app then handles it.
+    if (start["mode"] == "boot" && cfg["last_mode"].IsMap()) {
+      try {
+        std::tie(st.mode, st.info) = make_mode(yaml_json(cfg["last_mode"]), cfg, media_dir, *L, specs, fonts);
+      } catch (const std::exception &e) {
+        fprintf(stderr, "last mode: %s; boot screen until the web app is up\n", e.what());
+      }
+    }
   } catch (const YAML::Exception &e) {
     fprintf(stderr, "config %s: %s\n", config_path.c_str(), e.what());
     return 1;
