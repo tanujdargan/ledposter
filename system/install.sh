@@ -523,11 +523,17 @@ step_boot_config() {
   if findmnt -no OPTIONS /boot/firmware | grep -q '^ro,\|,ro,\|,ro$'; then run mount -o remount,rw /boot/firmware; fi
   if grep -q '^dtparam=audio=on' "$cfg"; then run sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$cfg"; fi
   if ! grep -q '^dtparam=audio=off' "$cfg"; then run sh -c "echo 'dtparam=audio=off' >> $cfg"; fi
+  # Faster to a picture: no 1 s firmware wait, no rainbow splash, no camera/DSI probing.
+  for tok in boot_delay=0 disable_splash=1 camera_auto_detect=0 display_auto_detect=0; do
+    name="${tok%%=*}"
+    if grep -q "^$name=" "$cfg"; then run sed -i "s/^$name=.*/$tok/" "$cfg"; else run sh -c "echo '$tok' >> $cfg"; fi
+  done
   # cmdline.txt is one line. A token is appended to it only when its key is not there at all,
   # so a value set by hand is kept and nothing is ever added twice. isolcpus=3: the matrix
   # library's refresh thread has core 3 to itself; the performance governor keeps the clock
-  # (and so the refresh timing) from stepping with load.
-  for tok in isolcpus=3 cpufreq.default_governor=performance; do
+  # (and so the refresh timing) from stepping with load. cloud-init=disabled: it only matters
+  # on the imager's first boot, and after that cost ~10 s of CPU on every boot.
+  for tok in isolcpus=3 cpufreq.default_governor=performance cloud-init=disabled; do
     name="${tok%%=*}="
     if ! grep -Eq "(^|[[:space:]])${name//./\\.}" "$cmd"; then run sed -i "1 s/\$/ $tok/" "$cmd"; fi
   done
