@@ -3,6 +3,7 @@ Sleeps are instant and nmcli runs inline, so each test is a deterministic sequen
 import asyncio
 import functools
 import os
+import time
 import stat
 
 from fake_net import FakeNet
@@ -213,5 +214,6 @@ async def test_loop_survives_missing_nmcli(tmp_path):
     def broken(argv, timeout=None):
         raise net.NetError("nmcli is not installed")
     s = wifisetup.WifiSetup(net.Net(broken, str(tmp_path)), Wall().show_text, str(tmp_path), sleep=no_sleep, to_thread=inline)
+    assert await s._boot_tick(time.monotonic(), FakeEngineStatus()) is False  # NM may still be starting
     assert await s._boot_tick(0.0, FakeEngineStatus()) is True and s.state["mode"] == "off"
     assert os.path.exists(os.path.join(tmp_path, "setup-password"))

@@ -284,6 +284,10 @@ class SettingsSaved(Settings):
     stream_error: Optional[str] = Field(None, description="The engine couldn't open a DDP/E1.31 port")
 
 
+class FirstBoot(BaseModel):
+    media: str = Field("", description="Media id played on the next boot instead of the last mode; '' = off")
+
+
 class ClockOverlay(BaseModel):
     enabled: bool = False
     position: Literal["top-left", "top-center", "top-right", "middle-left", "center", "middle-right",
@@ -600,11 +604,25 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
     st.lastmode = system.LastMode(lambda: st.cfg.get("last_mode"), engine_send,
                                   lambda mid: (st.library.get(mid) or {}).get("status") == "ready")
 
+    async def first_boot_done(status):
+        """Disarm first_boot once an engine started after it was armed plays it; it stays on
+        as the last mode until someone picks something else."""
+        fb = st.cfg["first_boot"]
+        if not fb.get("media") or not status or status.get("mode") != "media" or status.get("mode_name") != fb["media"]:
+            return
+        if time.time() - float(status.get("uptime_s") or 0) < float(fb.get("armed_at") or 0):
+            return  # already playing when it was armed: wait for the boot
+        st.cfg["last_mode"] = {"mode": "media", "media": fb["media"]}
+        st.cfg["first_boot"] = {"media": "", "armed_at": 0}
+        await asave()
+
     async def lastmode_loop():
         """The engine boots on its boot screen; send it the last mode once it is up."""
         while True:
             try:
-                await st.lastmode.tick(st.engine.status if st.engine.online else None)
+                status = st.engine.status if st.engine.online else None
+                await st.lastmode.tick(status)
+                await first_boot_done(status)
             except Exception:
                 log.exception("last mode restore")
             await asyncio.sleep(2)
@@ -1172,6 +1190,19 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
         await st.system_sync()  # DDP/E1.31 on/off changes the firewall
         restart = bool(needed) or before.matrix != body.matrix
         return SettingsSaved(**body.model_dump(), restart_required=restart, stream_error=stream_error)
+
+    @app.get("/api/first_boot", response_model=FirstBoot, tags=["settings"])
+    def get_first_boot(who=Depends(require_auth)):
+        return FirstBoot(media=st.cfg["first_boot"].get("media") or "")
+
+    @app.put("/api/first_boot", response_model=FirstBoot, tags=["settings"],
+             summary="Arm a media item for the next boot (a gift's first power-on), '' to disarm")
+    async def put_first_boot(body: FirstBoot, who=Depends(require_auth)):
+        if body.media and (st.library.get(body.media) or {}).get("status") != "ready":
+            raise HTTPException(404, "No such ready media item")
+        st.cfg["first_boot"] = {"media": body.media, "armed_at": time.time() if body.media else 0}
+        await asave()
+        return body
 
     @app.get("/api/clock_overlay", response_model=ClockOverlay, tags=["settings"])
     def get_clock_overlay(who=Depends(require_auth)):

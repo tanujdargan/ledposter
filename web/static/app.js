@@ -1041,9 +1041,17 @@ $("#factory-reset").onclick = () => {
 };
 views.settings = async (arg) => {
   views.current = "settings";
-  await loadSettings(); bindSettings(); renderTokens(); renderSystem();
+  await loadSettings(); bindSettings(); renderTokens(); renderSystem(); renderFirstBoot();
   if (arg === "confirm") { history.replaceState(null, "", "#/settings"); await confirmStatic(); } else renderNetwork();
 };
+
+async function renderFirstBoot() {
+  const sel = $("#first-boot");
+  const [fb, items] = await Promise.all([api("/api/first_boot"), loadMedia()]);
+  sel.replaceChildren(new Option("Off", ""), ...items.filter((m) => m.status === "ready").map((m) => new Option(m.name, m.id)));
+  sel.value = fb.media;
+  sel.onchange = async () => { try { await api("/api/first_boot", { method: "PUT", body: { media: sel.value } }); toast(sel.value ? "Armed for the next boot" : "Off"); } catch (e) { toast(e.message, true); } };
+}
 
 /* ---- init ---- */
 (async () => {

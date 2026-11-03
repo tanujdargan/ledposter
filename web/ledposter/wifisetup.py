@@ -103,6 +103,10 @@ class WifiSetup:
         try:
             connected = await self._net(self.net.connected)
         except NetError as e:
+            # NetworkManager can still be starting (the app no longer waits for it): try again
+            # until the setup timeout, then give up on the hotspot for this boot.
+            if time.monotonic() - t0 < self.timeout_s:
+                return False
             log.warning("network check failed, no setup hotspot: %s", e)
             return True
         if connected:

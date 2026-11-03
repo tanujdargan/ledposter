@@ -163,3 +163,10 @@ def test_next_item(authed, engine):
     engine.state["mode"] = "playlist"
     assert authed.post("/api/next").json() == {"skipped": True}
     assert engine.calls[-1]["cmd"] == "next"
+
+
+def test_first_boot_arm(authed, data):
+    assert authed.get("/api/first_boot").json() == {"media": ""}
+    assert authed.put("/api/first_boot", json={"media": "nope"}).status_code == 404
+    assert authed.put("/api/first_boot", json={"media": ""}).json() == {"media": ""}
+    assert yaml.safe_load((data / "config.yaml").read_text())["first_boot"] == {"media": "", "armed_at": 0}

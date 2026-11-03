@@ -593,9 +593,14 @@ int main(int argc, char **argv) {
     // No flag: go straight to the last mode the web app set (config last_mode) instead of
     // holding the boot screen until the web app is up, ~40 s later on a Pi. The boot screen
     // stays when there is none or it fails (a deleted media item); the web app then handles it.
-    if (start["mode"] == "boot" && cfg["last_mode"].IsMap()) {
+    // A media item armed for the first boot (Settings > First boot, a gift) wins; the web app
+    // disarms it once it sees it playing.
+    const YAML::Node fb = cfg["first_boot"];
+    const std::string first = fb.IsMap() && fb["media"].IsScalar() ? fb["media"].Scalar() : "";
+    if (start["mode"] == "boot" && (!first.empty() || cfg["last_mode"].IsMap())) {
       try {
-        std::tie(st.mode, st.info) = make_mode(yaml_json(cfg["last_mode"]), cfg, media_dir, *L, specs, fonts);
+        const json want = !first.empty() ? json{{"mode", "media"}, {"media", first}} : yaml_json(cfg["last_mode"]);
+        std::tie(st.mode, st.info) = make_mode(want, cfg, media_dir, *L, specs, fonts);
       } catch (const std::exception &e) {
         fprintf(stderr, "last mode: %s; boot screen until the web app is up\n", e.what());
       }

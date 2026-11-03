@@ -1,14 +1,13 @@
 # The web app (FastAPI, port 80). Runs as the unprivileged ledwall user with only the
 # capability to bind port 80; root-needing actions go through fixed units via polkit
 # (system/polkit). Independent of the engine: either one can crash and come back alone.
-# Ordered after the engine so the first thing it does is restore the last mode, but it must
-# never wait for the network (network-online.target would stall on a wall with no Wi-Fi yet).
+# Ordered after the engine only. Not after network.target either: it binds 0.0.0.0, and on the
+# Pi NetworkManager's netplan reloads hold network.target back ~30 s at boot (2026-11-02).
 # Installed by system/install.sh.
 [Unit]
 Description=LED wall web app
 RequiresMountsFor=/data
-After=network.target ledposter-engine.service
-Wants=network.target
+After=ledposter-engine.service
 StartLimitIntervalSec=0
 
 [Service]
