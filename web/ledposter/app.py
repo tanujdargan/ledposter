@@ -284,6 +284,14 @@ class SettingsSaved(Settings):
     stream_error: Optional[str] = Field(None, description="The engine couldn't open a DDP/E1.31 port")
 
 
+def boot_id():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return ""  # not Linux (tests on a Mac): every check counts as a new boot
+
+
 class FirstBoot(BaseModel):
     media: str = Field("", description="Media id played on the next boot instead of the last mode; '' = off")
 
@@ -605,15 +613,15 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
                                   lambda mid: (st.library.get(mid) or {}).get("status") == "ready")
 
     async def first_boot_done(status):
-        """Disarm first_boot once an engine started after it was armed plays it; it stays on
+        """Disarm first_boot once it plays in a boot after the one it was armed in; it stays on
         as the last mode until someone picks something else."""
         fb = st.cfg["first_boot"]
         if not fb.get("media") or not status or status.get("mode") != "media" or status.get("mode_name") != fb["media"]:
             return
-        if time.time() - float(status.get("uptime_s") or 0) < float(fb.get("armed_at") or 0):
-            return  # already playing when it was armed: wait for the boot
+        if fb.get("armed_boot") == boot_id():
+            return  # armed during this boot: wait for the next one (boot ids need no clock)
         st.cfg["last_mode"] = {"mode": "media", "media": fb["media"]}
-        st.cfg["first_boot"] = {"media": "", "armed_at": 0}
+        st.cfg["first_boot"] = {"media": "", "armed_boot": ""}
         await asave()
 
     async def lastmode_loop():
@@ -1200,7 +1208,7 @@ def create_app(data_dir=None, net_runner=None, mqtt_client_factory=None, git_run
     async def put_first_boot(body: FirstBoot, who=Depends(require_auth)):
         if body.media and (st.library.get(body.media) or {}).get("status") != "ready":
             raise HTTPException(404, "No such ready media item")
-        st.cfg["first_boot"] = {"media": body.media, "armed_at": time.time() if body.media else 0}
+        st.cfg["first_boot"] = {"media": body.media, "armed_boot": boot_id() if body.media else ""}
         await asave()
         return body
 

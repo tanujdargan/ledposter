@@ -57,9 +57,9 @@ DEFAULTS = {
     "maintenance": {"enabled": True, "day": 6, "hour": 4},
     "last_mode": {},
     # A media item the engine plays on the next boot instead of last_mode (a gift's first
-    # power-on). Once an engine started after armed_at plays it, the web app makes it last_mode
-    # and clears media. "" = off.
-    "first_boot": {"media": "", "armed_at": 0},
+    # power-on). Once it plays in a boot after armed_boot (a kernel boot id), the web app makes
+    # it last_mode and clears media. "" = off.
+    "first_boot": {"media": "", "armed_boot": ""},
     # The time (and date) the engine draws on top of whatever plays; applied by reload_config.
     # Sizes in px (CLOCK_TIME_PX, CLOCK_DATE_PX), date_px 0 = no date.
     "clock_overlay": {"enabled": False, "position": "bottom-center", "hour24": True, "time_px": 32, "date_px": 9},
